@@ -58,7 +58,12 @@ export function createSetPieceTakerTools(call) {
 
   return {
     get: args => context(args, async (scope, base, contexts) => {
-      if (!args.action) return { ok: true, values: await readAll(scope, base, contexts), liveVerified: false };
+      if (!args.action) return {
+        ok: true,
+        values: await readAll(scope, base, contexts),
+        liveVerified: false,
+        note: "只读模式下未选中具体球员（SelectedObjectList 为空），因此 CanAddToLeftFootTakers/CanAddToRightFootTakers 为 False 属正常现象，不代表游戏禁止添加或需要切到定位球页面。请从 SetPieceTakerAddPlayerList 选出球员下标后，直接带 action='add-left'|'add-right'|'add-both' 与 playerPaths:['下标'] 调用本工具预览（无需切页）。"
+      };
       const query = await prepare(scope, base, contexts, args);
       return scope.api("/api/v1/setpiece-takers/preview", query);
     }),
