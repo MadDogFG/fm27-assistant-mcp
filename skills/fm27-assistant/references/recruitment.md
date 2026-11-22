@@ -11,7 +11,7 @@
     1. 先调 `get_player_actions({ squadIndex })` 确认存在 `PersonOfferContract`（若只有 `PersonMakeOfferForPlayer` 且无 `PersonOfferContract`，说明该球员是租借加盟球员，游戏不允许直接续约，只能先报价买断）；
     2. `get_player_action_menu({ squadIndex, action: "PersonOfferContract" })` → `get_contract_draft_start({ squadIndex, entry })` → `open_contract_draft`；
     3. `get_contract_term` / `stage_contract_term` / `input_contract_amount` 填好条款；
-    4. `get_negotiation_actions({ domain: "contract", squadIndex, bucket: "OptionalActions" })` 找到「确认协议」后调用 `execute_negotiation_action(..., acceptConfirmation: true)` **全程无 UI 直接提交**。
+    4. 调 `get_negotiation_actions({ domain: "contract", squadIndex, bucket: "OptionalActions" })`：若此时先只看到「推荐条款」，先调 `execute_negotiation_action` 执行一次「推荐条款」推进谈判状态（也可顺便解除草稿绑定），再重新调用 `get_negotiation_actions` 就会出现「确认协议」，随后带 `acceptConfirmation: true` 执行即可 **全程无 UI 直接提交**（送出后等经纪人几天内于收件箱回应）。
 - **试训、体检与特殊联赛**：邀请/延长/结束试训、工作许可状态读取与上诉/体检处理、外租球员召回/终止租借，以及 MLS 工资帽/选秀流程辅助。
 
 ## 重要边界约束
