@@ -47,6 +47,7 @@ export function createMatchAnalyticsTools(call) {
     for (const name of names) {
       const sub = await scope.subscribeOptional("match", name, contexts, 1500);
       out[name] = sub.handle ? decodeValue(sub.read?.value ?? null, idMap) : { unavailable: sub.unavailable || "no_handle" };
+      if (sub.handle) await scope.release(sub.handle);
     }
     return out;
   }
@@ -60,7 +61,7 @@ export function createMatchAnalyticsTools(call) {
   }
 
   // MAT-R10 / MAT-R11 / MAT-R28: 球队实时统计、xG 与射门图、比赛基础观众/比分/裁判
-  async function teamStatsAndXg() {
+  async function teamStatsAndXg({ includeShotMap = false } = {}) {
     const state = await requireInMatch();
     const idMap = await getPropertyMap();
     return client.scope(async scope => {
@@ -70,14 +71,15 @@ export function createMatchAnalyticsTools(call) {
         const comps = await scope.subscribeOptional({ source: team.handle }, "CurrentComps", { human: { source: "human" }, team: { source: team.handle } }, 1000);
         if (comps.read?.value?.items?.length) contexts.Competition = { source: comps.handle, path: "0" };
       }
-      const data = await readMatchProps(scope, [
+      const fields = [
         "MatchScore", "GoalscorersString",
         "HomePossession", "AwayPossession", "MatchLastFiveMinutesPossession",
         "HomeShots", "AwayShots", "HomeShotsOnTarget", "AwayShotsOnTarget",
         "HomeCorners", "AwayCorners", "HomeFouls", "AwayFouls",
-        "Attendance", "AnnouncedAttendance",
-        "XgValue", "HomeShotMap", "AwayShotMap"
-      ], { ...contexts, isHomeTeam: state.isHomeTeam }, idMap);
+        "Attendance", "AnnouncedAttendance", "XgValue"
+      ];
+      if (includeShotMap) fields.push("HomeShotMap", "AwayShotMap");
+      const data = await readMatchProps(scope, fields, { ...contexts, isHomeTeam: state.isHomeTeam }, idMap);
       const refSub = await scope.subscribeOptional("match", "MatchReferee", contexts, 1000);
       let refereeName = null;
       if (refSub.handle) {
@@ -122,63 +124,71 @@ export function createMatchAnalyticsTools(call) {
   }
 
   // MAT-R13 / MAT-R14 / MAT-R19 / MAT-R25 / MAT-R26: 双方球员比赛评分与完整个人实时统计
-  async function playerLiveStats({ side = "home", limit = 15 } = {}) {
+  async function playerLiveStats({ side = "home", limit = 15, compact = true } = {}) {
     const state = await requireInMatch();
     const idMap = await getPropertyMap();
     const sides = side === "both" ? ["home", "away"] : [side === "away" ? "away" : "home"];
-    const statFields = [
+    const compactStatFields = [
       "SquadNumber", "Position", "TotalRating", "Goals", "Assists",
-      "YellowCardedInMatch", "RedCardedInMatch", "MatchTime", "IncidentType",
-      "ShotAttempts", "ShotsOnTarget", "ExpectedGoals", "NonPenaltyExpectedGoals", "ExpectedAssists",
-      "PassAttempts", "PassCompleted", "PassCompletionPercentage",
+      "YellowCardedInMatch", "RedCardedInMatch", "MatchTime",
+      "ShotAttempts", "ShotsOnTarget", "ExpectedGoals", "ExpectedAssists",
+      "PassAttempts", "PassCompletionPercentage", "KeyPasses",
+      "TackleCompleted", "Interceptions", "DistanceRan", "TotalSaves"
+    ];
+    const fullStatFields = [
+      ...compactStatFields,
+      "IncidentType", "NonPenaltyExpectedGoals", "PassCompleted",
       "ShortPassesAttempted", "ShortPassesCompleted", "ShortPassCompletionPercentage",
       "MediumPassesAttempted", "MediumPassesCompleted", "MediumPassCompletionPercentage",
       "LongPassesAttempted", "LongPassesCompleted", "LongPassCompletionPercentage",
-      "KeyPasses", "OpenPlayKeyPasses", "ChancesCreated", "ClearCutChances",
+      "OpenPlayKeyPasses", "ChancesCreated", "ClearCutChances",
       "DribblesMade", "ProgressivePasses", "PressuresCompleted",
-      "DefensiveActions", "TackleAttempts", "TackleCompleted", "Interceptions", "Clearances",
-      "DistanceRan", "Sprints", "FoulsMade", "FoulsAgainst", "TotalSaves"
+      "DefensiveActions", "TackleAttempts", "Clearances",
+      "Sprints", "FoulsMade", "FoulsAgainst"
     ];
+    const statFields = compact ? compactStatFields : fullStatFields;
 
     const result = {};
     for (const s of sides) {
       const isHome = s === "home";
-      // 先在一个短暂 scope 中拿到球员数量与基础列表，再按单名球员分段开 scope 避免超过 128 订阅句柄上限
-      const totalCount = await client.scope(async scope => {
+      result[s] = await client.scope(async scope => {
+        const team = await scope.subscribeOptional("human", "Team", {}, 800);
+        const teamCtx = team.handle ? { source: team.handle } : { source: "human", path: "Team" };
         const listSub = await scope.subscribeOptional("match", "PlayerMatchStats", { isHomeTeam: isHome }, 1500);
-        return listSub.read?.value?.items?.length || 0;
-      });
-      const count = Math.min(totalCount, Math.max(1, Number(limit) || 15));
-      const players = [];
-      for (let i = 0; i < count; i++) {
-        const row = await client.scope(async scope => {
-          const team = await scope.subscribeOptional("human", "Team", {}, 800);
-          const teamCtx = team.handle ? { source: team.handle } : { source: "human", path: "Team" };
-          const listSub = await scope.subscribeOptional("match", "PlayerMatchStats", { isHomeTeam: isHome }, 1500);
-          const items = listSub.read?.value?.items || [];
+        const items = listSub.read?.value?.items || [];
+        const totalCount = items.length;
+        const count = Math.min(totalCount, Math.max(1, Number(limit) || 15));
+        const players = [];
+
+        for (let i = 0; i < count; i++) {
           const pRef = { source: listSub.handle, path: String(i) };
           const playerRow = { index: i, identity: items[i]?.identity || null };
           const playerSub = await scope.subscribeOptional(pRef, "Player", {}, 700);
           if (playerSub.handle) {
             const pCtx = { human: { source: "human" }, team: teamCtx, Team: teamCtx };
-            const nameSub = await scope.subscribeOptional({ source: playerSub.handle }, "Name", {}, 700);
-            playerRow.name = stripFmTags(scalar(nameSub.read?.value)) || null;
+            const nameR = await scope.readAndRelease({ source: playerSub.handle }, "Name", {}, 700);
+            playerRow.name = nameR.scalar || null;
             for (const pf of ["Condition", "IsInjured", "Sharpness", "Morale"]) {
-              const pfSub = await scope.subscribeOptional({ source: playerSub.handle }, pf, pCtx, 500);
-              if (pfSub.handle) playerRow[pf] = decodeValue(pfSub.read?.value, idMap);
+              const pfR = await scope.readAndRelease({ source: playerSub.handle }, pf, pCtx, 500);
+              if (pfR.ok && pfR.value !== null) playerRow[pf] = decodeValue(pfR.value, idMap);
             }
+            await scope.release(playerSub.handle);
           }
           for (const f of statFields) {
-            const fSub = await scope.subscribeOptional(pRef, f, {}, 500);
-            if (fSub.handle) playerRow[f] = decodeValue(fSub.read?.value, idMap);
+            const fR = await scope.readAndRelease(pRef, f, {}, 500);
+            if (fR.ok && fR.value !== null) {
+              const decoded = decodeValue(fR.value, idMap);
+              if (!compact || (decoded !== "0" && decoded !== 0 && decoded !== "False" && decoded !== false && decoded !== "")) {
+                playerRow[f] = decoded;
+              }
+            }
           }
-          return playerRow;
-        });
-        players.push(row);
-      }
-      result[s] = { count: totalCount, players };
+          players.push(playerRow);
+        }
+        return { count: totalCount, players };
+      });
     }
-    return { ok: true, readOnly: true, minute: state.minute, continueState: state.continueState, sides: result };
+    return { ok: true, readOnly: true, compact: Boolean(compact), minute: state.minute, continueState: state.continueState, sides: result };
   }
 
   // MAT-R22: 指定球员热区图数据
