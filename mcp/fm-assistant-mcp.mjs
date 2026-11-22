@@ -255,8 +255,6 @@ const extended = createExtendedTools(call);
 const excludedTools = new Set([
   "answer_press_conference_question", "get_communication_actions", "execute_communication_action",
   "get_conversation_replies", "reply_to_conversation",
-  "get_negotiation_actions", "execute_negotiation_action", "respond_transfer_activity_offer",
-  "get_agent_offer_discard_preview", "discard_agent_offer", "save_tactic_file",
   "submit_match_lineup", "continue_match_stage", "get_match_shout_recipients", "select_match_shout_recipients",
   "get_match_shouts", "execute_match_shout", "preview_match_team_talk_recipients", "select_match_team_talk_recipients",
   "get_match_team_talk_actions", "execute_match_team_talk_action", "preview_match_substitution", "execute_match_substitution",

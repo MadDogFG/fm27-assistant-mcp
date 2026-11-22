@@ -47,7 +47,7 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
 - **“帮我排首发、选队长、分球衣号码”**
   -> 调 `get_lineup_options` 排首发，`get_captain_options` / `set_captain` 选正副队长，`get_squad_number_options` / `change_squad_numbers` 分号码。
 - **“我想买人/租借/续约，看看球探和候选名单”**
-  -> 调 `get_scouting_knowledge_and_reports`、`list_shortlists` 看候选；填报价或续约草稿先翻 [recruitment.md](references/recruitment.md)（记得止步草稿）。
+  -> 调 `get_scouting_knowledge_and_reports`、`list_shortlists` 看候选；谈判与报价流程先翻 [recruitment.md](references/recruitment.md)（条款确认后可直接用 `get_negotiation_actions` + `execute_negotiation_action` 提交）。
 - **“业务工具没覆盖的冷门字段（如租借工资分担、合同条款细节、某面板原生属性）”**
   -> 先用 `live_describe` 自省节点有哪些属性名（别盲猜），再用 `live_query` 结构化读取（严格只读、自动管理订阅与引用解析）。
 
