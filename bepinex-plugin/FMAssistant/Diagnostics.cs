@@ -30,6 +30,8 @@ public static class Diagnostics
         }
     }
 
+    private const long MaxLogBytes = 5 * 1024 * 1024; // 单文件上限 5MB，防止长期挂机撑爆磁盘
+
     private static void WriteLog()
     {
         foreach (var line in PendingLines.GetConsumingEnumerable())
@@ -37,6 +39,12 @@ public static class Diagnostics
             try
             {
                 System.IO.Directory.CreateDirectory(Directory);
+                if (File.Exists(FilePath) && new FileInfo(FilePath).Length > MaxLogBytes)
+                {
+                    var backup = FilePath + ".old";
+                    if (File.Exists(backup)) File.Delete(backup);
+                    File.Move(FilePath, backup);
+                }
                 File.AppendAllText(FilePath, line + Environment.NewLine);
             }
             catch

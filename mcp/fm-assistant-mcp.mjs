@@ -512,6 +512,44 @@ function sanitizePayload(value) {
   return value;
 }
 
+const MAX_PAYLOAD_CHARS = 48000;
+
+function trimOversizedArrays(node, maxItems = 20) {
+  if (Array.isArray(node)) {
+    const trimmed = node.slice(0, maxItems).map(item => trimOversizedArrays(item, maxItems));
+    if (node.length > maxItems) {
+      return {
+        _truncated: true,
+        _originalCount: node.length,
+        _keptCount: maxItems,
+        _note: "数据量过大已自动截断以防 Token 溢出，请使用分页参数或缩小查询范围。",
+        items: trimmed
+      };
+    }
+    return trimmed;
+  }
+  if (node && typeof node === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(node)) out[k] = trimOversizedArrays(v, maxItems);
+    return out;
+  }
+  return node;
+}
+
+function guardPayloadSize(obj) {
+  const json = JSON.stringify(obj);
+  if (json.length <= MAX_PAYLOAD_CHARS) return obj;
+  let guarded = trimOversizedArrays(obj, 20);
+  if (JSON.stringify(guarded).length > MAX_PAYLOAD_CHARS) {
+    guarded = trimOversizedArrays(obj, 8);
+  }
+  if (guarded && typeof guarded === "object" && !Array.isArray(guarded)) {
+    guarded._payloadGuarded = true;
+    guarded._originalBytes = json.length;
+  }
+  return guarded;
+}
+
 async function handleMessage(message) {
   if (!message || message.jsonrpc !== "2.0") return;
   const { id, method, params } = message;
@@ -555,7 +593,7 @@ async function handleMessage(message) {
       } else {
         result = await callTool(toolName, toolArgs);
       }
-      const cleanResult = sanitizePayload(result);
+      const cleanResult = guardPayloadSize(sanitizePayload(result));
       const elapsed = Date.now() - t0;
       const paramSummary = JSON.stringify(targetParams).slice(0, 200);
       writeMcpLog(cleanResult?.ok === false ? "WARN" : "INFO", `${targetAction} (${elapsed}ms) args=${paramSummary}`);
