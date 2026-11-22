@@ -1,0 +1,10 @@
+# Build outputs
+bepinex-plugin/FMAssistant/bin/
+bepinex-plugin/FMAssistant/obj/
+*.dll
+*.pdb
+
+# Local logs & temp files
+*.log
+.DS_Store
+Thumbs.db

@@ -1,0 +1,869 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <Version>1.0.0</Version>
+    <FMGameDir Condition="'$(FMGameDir)' == ''">$(FM_GAME_DIR)</FMGameDir>
+    <FMGameDir Condition="'$(FMGameDir)' == '' and Exists('C:/Program Files (x86)/Steam/steamapps/common/Football Manager 27')">C:/Program Files (x86)/Steam/steamapps/common/Football Manager 27</FMGameDir>
+    <AssemblyName>FMAssistant</AssemblyName>
+    <RootNamespace>FMAssistant</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>MSB3277;CS0618</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="0Harmony">
+      <HintPath>$(FMGameDir)/BepInEx/core/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="AsmResolver.DotNet">
+      <HintPath>$(FMGameDir)/BepInEx/core/AsmResolver.DotNet.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="AsmResolver.PE.File">
+      <HintPath>$(FMGameDir)/BepInEx/core/AsmResolver.PE.File.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="AsmResolver.PE">
+      <HintPath>$(FMGameDir)/BepInEx/core/AsmResolver.PE.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="AsmResolver">
+      <HintPath>$(FMGameDir)/BepInEx/core/AsmResolver.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="AssetRipper.CIL">
+      <HintPath>$(FMGameDir)/BepInEx/core/AssetRipper.CIL.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="AssetRipper.Primitives">
+      <HintPath>$(FMGameDir)/BepInEx/core/AssetRipper.Primitives.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Core">
+      <HintPath>$(FMGameDir)/BepInEx/core/BepInEx.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Preloader.Core">
+      <HintPath>$(FMGameDir)/BepInEx/core/BepInEx.Preloader.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Unity.Common">
+      <HintPath>$(FMGameDir)/BepInEx/core/BepInEx.Unity.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP">
+      <HintPath>$(FMGameDir)/BepInEx/core/BepInEx.Unity.IL2CPP.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Cpp2IL.Core">
+      <HintPath>$(FMGameDir)/BepInEx/core/Cpp2IL.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Disarm">
+      <HintPath>$(FMGameDir)/BepInEx/core/Disarm.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Gee.External.Capstone">
+      <HintPath>$(FMGameDir)/BepInEx/core/Gee.External.Capstone.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Iced">
+      <HintPath>$(FMGameDir)/BepInEx/core/Iced.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Common">
+      <HintPath>$(FMGameDir)/BepInEx/core/Il2CppInterop.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Generator">
+      <HintPath>$(FMGameDir)/BepInEx/core/Il2CppInterop.Generator.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.HarmonySupport">
+      <HintPath>$(FMGameDir)/BepInEx/core/Il2CppInterop.HarmonySupport.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Runtime">
+      <HintPath>$(FMGameDir)/BepInEx/core/Il2CppInterop.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="LibCpp2IL">
+      <HintPath>$(FMGameDir)/BepInEx/core/LibCpp2IL.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Mono.Cecil.Mdb">
+      <HintPath>$(FMGameDir)/BepInEx/core/Mono.Cecil.Mdb.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Mono.Cecil.Pdb">
+      <HintPath>$(FMGameDir)/BepInEx/core/Mono.Cecil.Pdb.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Mono.Cecil.Rocks">
+      <HintPath>$(FMGameDir)/BepInEx/core/Mono.Cecil.Rocks.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Mono.Cecil">
+      <HintPath>$(FMGameDir)/BepInEx/core/Mono.Cecil.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MonoMod.Backports">
+      <HintPath>$(FMGameDir)/BepInEx/core/MonoMod.Backports.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MonoMod.ILHelpers">
+      <HintPath>$(FMGameDir)/BepInEx/core/MonoMod.ILHelpers.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MonoMod.RuntimeDetour">
+      <HintPath>$(FMGameDir)/BepInEx/core/MonoMod.RuntimeDetour.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MonoMod.Utils">
+      <HintPath>$(FMGameDir)/BepInEx/core/MonoMod.Utils.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SemanticVersioning">
+      <HintPath>$(FMGameDir)/BepInEx/core/SemanticVersioning.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="StableNameDotNet">
+      <HintPath>$(FMGameDir)/BepInEx/core/StableNameDotNet.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="WasmDisassembler">
+      <HintPath>$(FMGameDir)/BepInEx/core/WasmDisassembler.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Backtrace.Unity">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Backtrace.Unity.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ExCSS.Unity">
+      <HintPath>$(FMGameDir)/BepInEx/interop/ExCSS.Unity.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FM.GameConfig">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FM.GameConfig.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FM.GamePlugin">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FM.GamePlugin.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FM.GameSimulation">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FM.GameSimulation.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FM.Graphics.Tools">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FM.Graphics.Tools.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FM.Graphics">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FM.Graphics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FM.Input">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FM.Input.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FM.Lattice">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FM.Lattice.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FM.Match">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FM.Match.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FM.Performance">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FM.Performance.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FM.UI">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FM.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FMGame">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FMGame.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FastNoise Lite">
+      <HintPath>$(FMGameDir)/BepInEx/interop/FastNoise Lite.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Gadsme.GadsmeSdk">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Gadsme.GadsmeSdk.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Gadsme">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Gadsme.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppMicrosoft.Bcl.TimeProvider">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppMicrosoft.Bcl.TimeProvider.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppMicrosoft.Extensions.DependencyInjection.Abstractions">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppMicrosoft.Extensions.DependencyInjection.Abstractions.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppMicrosoft.Extensions.DependencyInjection">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppMicrosoft.Extensions.DependencyInjection.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppMicrosoft.Extensions.Logging.Abstractions">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppMicrosoft.Extensions.Logging.Abstractions.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppMicrosoft.Extensions.Logging">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppMicrosoft.Extensions.Logging.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppMicrosoft.Extensions.Options">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppMicrosoft.Extensions.Options.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppMicrosoft.Extensions.Primitives">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppMicrosoft.Extensions.Primitives.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppMono.Security">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppMono.Security.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Collections.Immutable">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Collections.Immutable.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Core">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Data">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Data.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Diagnostics.DiagnosticSource">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Diagnostics.DiagnosticSource.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Drawing">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Drawing.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.IO.Hashing">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.IO.Hashing.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Net.Http">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Net.Http.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Numerics">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Numerics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Runtime.CompilerServices.Unsafe">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Runtime.CompilerServices.Unsafe.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Runtime.Serialization">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Runtime.Serialization.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Text.Encodings.Web">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Text.Encodings.Web.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Text.Json">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Text.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Xml.Linq">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Xml.Linq.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem.Xml">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.Xml.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2CppSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2Cppmscorlib">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Il2Cppmscorlib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MagicaClothV2">
+      <HintPath>$(FMGameDir)/BepInEx/interop/MagicaClothV2.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Pragma.FirstLook">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Pragma.FirstLook.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RTLTMPro">
+      <HintPath>$(FMGameDir)/BepInEx/interop/RTLTMPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Addressables">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Addressables.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Anim">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Anim.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Audio">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Audio.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Bindable.Reference.Core">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Bindable.Reference.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Bindable">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Bindable.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.CityGen">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.CityGen.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Core">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Data">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Data.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Debug">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Debug.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Input">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Input.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Interop">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Interop.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Lattice">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Lattice.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Marshalling">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Marshalling.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Match">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Match.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.MatchDevUI">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.MatchDevUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.MatchTypes">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.MatchTypes.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Playerloop">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Playerloop.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.Services">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.Services.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.UI">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.UnityBuildVerification">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.UnityBuildVerification.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.VisualScripting.Core">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.VisualScripting.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SI.VisualScripting">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SI.VisualScripting.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SIShared.Skinning">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SIShared.Skinning.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SceneLoadTest">
+      <HintPath>$(FMGameDir)/BepInEx/interop/SceneLoadTest.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ScreenSpaceReflections">
+      <HintPath>$(FMGameDir)/BepInEx/interop/ScreenSpaceReflections.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Tayx.Graphy">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Tayx.Graphy.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Addressables">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.Addressables.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Animation.Rigging">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.Animation.Rigging.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Burst.Unsafe">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.Burst.Unsafe.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Burst">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.Burst.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Cinemachine">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.Cinemachine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Collections.LowLevel.ILSupport">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.Collections.LowLevel.ILSupport.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Collections">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.Collections.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.InputSystem.ForUI">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.InputSystem.ForUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.InputSystem">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.InputSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.InternalAPIEngineBridge.015">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.InternalAPIEngineBridge.015.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Mathematics">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.Mathematics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.MemoryProfiler">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.MemoryProfiler.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Profiling.Core">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.Profiling.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.RenderPipeline.Universal.ShaderLibrary">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.RenderPipeline.Universal.ShaderLibrary.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.RenderPipelines.Core.Runtime.Shared">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.RenderPipelines.Core.Runtime.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.RenderPipelines.Core.Runtime">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.RenderPipelines.Core.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.RenderPipelines.GPUDriven.Runtime">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.RenderPipelines.GPUDriven.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.RenderPipelines.Universal.2D.Runtime">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.RenderPipelines.Universal.2D.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.RenderPipelines.Universal.Runtime">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.RenderPipelines.Universal.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.ResourceManager">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.ResourceManager.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Splines">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.Splines.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Timeline">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.Timeline.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.UnifiedRayTracing.Runtime">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.UnifiedRayTracing.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.VisualEffectGraph.Runtime">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Unity.VisualEffectGraph.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AIModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.AIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AccessibilityModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.AccessibilityModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AdaptivePerformanceModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.AdaptivePerformanceModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AndroidJNIModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.AndroidJNIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AnimationModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.AnimationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AssetBundleModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.AssetBundleModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ClothModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.ClothModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ClusterInputModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.ClusterInputModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ClusterRendererModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.ClusterRendererModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ContentLoadModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.ContentLoadModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CrashReportingModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.CrashReportingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.DSPGraphModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.DSPGraphModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.DirectorModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.DirectorModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.GIModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.GIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.GameCenterModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.GameCenterModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.GraphicsStateCollectionSerializerModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.GraphicsStateCollectionSerializerModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.GridModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.GridModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.HierarchyCoreModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.HierarchyCoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.HierarchyModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.HierarchyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.HotReloadModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.HotReloadModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IdentifiersModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.IdentifiersModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputForUIModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.InputForUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.InputModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.JSONSerializeModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.LocalizationModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.LocalizationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.MarshallingModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.MarshallingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.MultiplayerModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.MultiplayerModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ParticleSystemModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.ParticleSystemModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PerformanceReportingModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.PerformanceReportingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.Physics2DModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.Physics2DModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsBackendPhysXModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.PhysicsBackendPhysXModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PropertiesModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.PropertiesModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.RenderAs2DModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.RenderAs2DModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.RuntimeInitializeOnLoadManagerInitializerModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.RuntimeInitializeOnLoadManagerInitializerModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ScreenCaptureModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.ScreenCaptureModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ShaderRuntimeModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.ShaderRuntimeModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ShaderVariantAnalyticsModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.ShaderVariantAnalyticsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.SharedInternalsModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.SharedInternalsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.SpriteMaskModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.SpriteMaskModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.SpriteShapeModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.SpriteShapeModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.StreamingModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.StreamingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.SubstanceModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.SubstanceModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.SubsystemsModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.SubsystemsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TLSModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.TLSModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TerrainModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.TerrainModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TerrainPhysicsModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.TerrainPhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextCoreFontEngineModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.TextCoreFontEngineModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextCoreTextEngineModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.TextCoreTextEngineModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TilemapModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.TilemapModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIElementsModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UIElementsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UmbraModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UmbraModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityAnalyticsCommonModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UnityAnalyticsCommonModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityAnalyticsModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UnityAnalyticsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityConnectModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UnityConnectModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityConsentModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UnityConsentModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityCurlModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UnityCurlModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestAssetBundleModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UnityWebRequestAssetBundleModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestAudioModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UnityWebRequestAudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UnityWebRequestModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestTextureModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UnityWebRequestTextureModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestWWWModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.UnityWebRequestWWWModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.VFXModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.VFXModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.VRModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.VRModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.VectorGraphicsModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.VectorGraphicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.VehiclesModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.VehiclesModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.VideoModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.VideoModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.VirtualTexturingModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.VirtualTexturingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.WindModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.WindModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.XRModule">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.XRModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(FMGameDir)/BepInEx/interop/UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Utf8StringInterpolation">
+      <HintPath>$(FMGameDir)/BepInEx/interop/Utf8StringInterpolation.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ZLogger.Unity">
+      <HintPath>$(FMGameDir)/BepInEx/interop/ZLogger.Unity.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ZLogger">
+      <HintPath>$(FMGameDir)/BepInEx/interop/ZLogger.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ZString">
+      <HintPath>$(FMGameDir)/BepInEx/interop/ZString.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="__Generated">
+      <HintPath>$(FMGameDir)/BepInEx/interop/__Generated.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+  <Target Name="ValidateFMGameDir" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(FMGameDir)/BepInEx/core/BepInEx.Core.dll')" Text="Set FMGameDir (-p:FMGameDir=...) or FM_GAME_DIR to your Football Manager 27 installation with BepInEx installed." />
+  </Target>
+  <Target Name="UseSelectedFMInterop" BeforeTargets="ResolveAssemblyReferences" Condition="'$(FMInteropDir)' != ''">
+    <ItemGroup>
+      <Reference Remove="__Generated" Condition="!Exists('$(FMInteropDir)/__Generated.dll')" />
+      <Reference Update="@(Reference)" Condition="$([System.String]::Copy('%(Reference.HintPath)').Contains('/BepInEx/interop/'))">
+        <HintPath>$(FMInteropDir)/%(Reference.Identity).dll</HintPath>
+      </Reference>
+    </ItemGroup>
+  </Target>
+</Project>

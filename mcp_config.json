@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "fm27-assistant": {
+      "command": "node",
+      "args": [
+        "mcp/fm-assistant-mcp.mjs"
+      ],
+      "env": {
+        "FM_ASSISTANT_URL": "http://127.0.0.1:27190"
+      }
+    }
+  }
+}
