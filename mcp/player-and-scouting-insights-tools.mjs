@@ -191,8 +191,8 @@ export function createPlayerAndScoutingInsightsTools(call) {
       const team = await scope.subscribe("human", "Team");
       const contexts = {
         human: { source: "human" }, Human: { source: "human" },
-        club: { source: "human", path: "Club" }, Club: { source: "human", path: "Club" },
-        team: { source: "human", path: "Team" }, Team: { source: "human", path: "Team" },
+        club: { source: club.handle }, Club: { source: club.handle },
+        team: { source: team.handle }, Team: { source: team.handle },
         IsPlayerRecruitment: true,
         Gender: 0,
       };
