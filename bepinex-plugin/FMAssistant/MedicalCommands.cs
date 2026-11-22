@@ -13,7 +13,7 @@ namespace FMAssistant;
 public static class MedicalCommands
 {
     private static bool Allowed(uint action) => action == (uint)ActionID.PersonRequestPhysioReport || action == (uint)ActionID.PersonRequestInjuryRiskUpdate;
-    private sealed record Prepared(uint Action, InteropReference ActionRef, string Target, TypedValue Payload, string Label, bool Disabled, bool Confirmation, string Token);
+    private sealed record Prepared(uint Action, SI.Interop.InteropReference ActionRef, string Target, TypedValue Payload, string Label, bool Disabled, bool Confirmation, string Token);
     private static Prepared Prepare(string offered, string action, string items, string entryJson)
     {
         var available = Channel(offered, "game", "Actions");

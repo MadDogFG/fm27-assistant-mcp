@@ -143,7 +143,7 @@ public static class SquadAdministration
             () =>
             {
                 if (pick.ActionRef != null)
-                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.Game.ActionID)pick.ActionId, pick.EventId, pick.ActionRef, TypedValue.CreateCopyFrom(pick.Data), true, null, null);
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.GamePlugin.ActionID)pick.ActionId, pick.EventId, pick.ActionRef, TypedValue.CreateCopyFrom(pick.Data), true, null, null);
                 else
                     SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent(pick.EventId, teamRef, TypedValue.CreateCopyFrom(pick.Data));
             }, null, null, "captain_action_dispatch_only");

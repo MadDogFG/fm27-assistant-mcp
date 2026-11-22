@@ -97,7 +97,7 @@ public static class PlayerAvailabilityCommands
             () =>
             {
                 if (p.ActionRef != null)
-                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.Game.ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, p.Payload, !p.Confirmation, null, null);
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.GamePlugin.ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, p.Payload, !p.Confirmation, null, null);
                 else
                     SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, playerRef, p.Payload);
             },

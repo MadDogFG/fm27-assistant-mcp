@@ -67,7 +67,7 @@ public static class PlayerManagementCommands
         return new { ok = true, actions, scope = "current_game_offered_normal_person_menu_families", liveVerified = false };
     }
 
-    private sealed record Prepared(uint Action, InteropReference ActionRef, string Target, TypedValue Payload, string Label, bool Disabled, bool Confirmation, TypedValue ConfirmationData, string Token);
+    private sealed record Prepared(uint Action, SI.Interop.InteropReference ActionRef, string Target, TypedValue Payload, string Label, bool Disabled, bool Confirmation, TypedValue ConfirmationData, string Token);
     private static Prepared Prepare(string offered, string action, string items, string entryJson)
     {
         var available = Channel(offered, "game", "Actions");
