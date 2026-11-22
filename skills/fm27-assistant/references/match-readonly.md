@@ -4,7 +4,7 @@
 
 ## 核心能力范围（严格只读）
 - **赛前与赛中实时状态**：聚合读取当前比赛播放状态、比赛阶段、比分、模拟进度与双方阵型阵容（`get_match_live_report`）。
-- **实时与历史统计分析**：读取双方控球率、射门/射正、预期进球（xG / 非点球 xG）、预期助攻（xA）、关键传球、长短中传成功率、攻防区域分布及数据中心趋势对比（`get_match_analytics`）。
+- **实时与历史统计分析**：读取双方控球率、射门/射正、预期进球（xG / 非点球 xG）、预期助攻（xA）、关键传球、长短中传成功率、攻防区域分布及球员评分跑动数据（`get_match_team_stats_and_xg`, `get_match_player_live_stats`, `get_match_momentum_and_dugout`, `get_match_passing_network`）。
 - **历史比赛战报与事件**：读取已完成比赛的完整事件时间线（进球、红黄牌、换人）、球员评分及赛后教练席提示（`get_past_match_report`）。
 
 ## 边界约束

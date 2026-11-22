@@ -39,7 +39,7 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
 - **“下场打谁 / 对手有什么弱点 / 怎么调整战术”**
   -> 调 `get_opposition_scout_report` 看对手报告，再查 `get_tactic_slots` 和 `get_lineup_options` 看当前阵型与首发。
 - **“俱乐部老板对我们有啥要求 / 还有多少钱买人”**
-  -> 调 `get_club_overview` + `get_club_vision` + `get_budget_adjustment`（别去用 `get_club_panel_state` 盲猜属性名）。
+  -> 调 `get_club_history_and_overview` + `get_club_vision_draft` + `get_budget_allocation`（别去用 `get_club_panel_state` 盲猜属性名）。
 - **“刚踢完这场比赛踢得怎么样 / 赛中数据咋样”**
   -> 比赛中调 `get_match_live_report` / `get_match_team_stats_and_xg`；踢完了看 `get_past_match_report`。
 

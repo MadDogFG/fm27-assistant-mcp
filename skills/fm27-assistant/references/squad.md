@@ -6,7 +6,7 @@
 - **紧凑阵容全景（首选入口）**：使用 `get_squad_snapshot` 一次性按“一行一人”读出全队姓名、球衣号、年龄、位置、体能、锐度、士气、星级、薪资、合同到期与出场承诺（20 人总返回 < 5KB），无需逐人轮询。
 - **单人与横向对比**：单人详情用 `get_player_career_playing_time_and_reserves`（默认 `compact: true` 防上下文溢出），2~4 人横向对比用 `compare_players`（已内置位置兜底）。
 - **名单与未来规划**：读取一线队、U21/预备队及 U18 青年队名单、可用性、更衣室领袖层级（`get_squad_dynamics_and_hierarchy`）及未来赛程阵容规划（`get_squad_planner`）。
-- **团队职务与号码**：正副队长任命与顺位调整（`manage_captaincy`）、球衣号码自动分配/手动调整/草稿确认（`manage_squad_numbers`）、主力与替补顺位管理。
+- **团队职务与号码**：正副队长任命与顺位调整（`get_captain_options`, `set_captain`, `get_captaincy_standin`）、球衣号码自动分配/手动调整/草稿确认（`get_squad_number_options`, `change_squad_numbers`, `set_player_squad_number`）、主力与替补顺位管理。
 - **赛事注册与梯队出场**：赛事大名单注册提交与资格校验（`get_squad_registration`）、授权或撤销一线队球员参加预备队/U20 比赛及出场分钟限制。
 - **伤病医疗与休假**：请求理疗师/体能报告、选择伤病治疗方案（队医/专家/手术）、康复阶段控制、请假与假期召回。
 - **团队管理与国家队**：发起全队会议/训话、纪律处分决定、调整出场时间约定（Playing Time），以及国家队模式下的征召、撤回与集训大名单管理。

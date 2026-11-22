@@ -1,6 +1,6 @@
 import { createLiveClient } from "./live-client.mjs";
 
-// 只读比赛状态聚合：播放/阶段/模拟/活动/战术草稿。高级统计与赛事报告请调用内置的 get_match_analytics / get_past_match_report。
+// 只读比赛状态聚合：播放/阶段/模拟/活动/战术草稿。高级统计与赛事报告请调用内置的 get_match_team_stats_and_xg / get_past_match_report。
 export function createMatchReadTools(call, readMatchState) {
   const client = createLiveClient(call);
   const attempt = async (read, name) => {
@@ -18,7 +18,7 @@ export function createMatchReadTools(call, readMatchState) {
         if (args.waiting) parts.push(await attempt(() => scope.api("/api/v1/match/stage-state", { waiting: args.waiting, tactic: args.tactic, pending: args.pending || "", managerSide: String(args.managerSide === true) }), "stage"));
       }
       return { ok: true, parts, dispatched: false, liveVerified: false,
-        advanced: "xG、射门、传球与历史比赛事件详情请使用插件内置工具 get_match_analytics 或 get_past_match_report。" };
+        advanced: "xG、射门、传球与历史比赛事件详情请使用插件内置工具 get_match_team_stats_and_xg / get_match_player_live_stats 或 get_past_match_report。" };
     })
   };
 }
