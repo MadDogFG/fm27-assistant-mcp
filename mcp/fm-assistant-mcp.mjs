@@ -6,10 +6,31 @@
  * 环境变量：FM_ASSISTANT_URL 覆盖地址（默认 http://127.0.0.1:27190）
  */
 import readline from "node:readline";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createTacticTools } from "./tactic-tools.mjs";
 import { createInboxTools } from "./inbox-tools.mjs";
 import { createExtendedTools } from "./extended-tools.mjs";
 import { discoverTools, DOMAIN_META } from "./tool-catalog.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LOG_FILE = process.env.FM_ASSISTANT_LOG_FILE || path.resolve(__dirname, "..", "logs", "mcp.log");
+const MAX_LOG_BYTES = 2 * 1024 * 1024;
+
+function writeMcpLog(level, message) {
+  try {
+    const dir = path.dirname(LOG_FILE);
+    fs.mkdirSync(dir, { recursive: true });
+    if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > MAX_LOG_BYTES) {
+      try { fs.renameSync(LOG_FILE, LOG_FILE + ".old"); } catch {}
+    }
+    const ts = new Date().toISOString();
+    fs.appendFileSync(LOG_FILE, `[${ts}] [${level}] ${message}\n`, "utf8");
+  } catch {
+    // 日志写入失败绝不影响主流程
+  }
+}
 
 const BASE = (process.env.FM_ASSISTANT_URL || "http://127.0.0.1:27190").replace(/\/+$/, "");
 const SERVER = { name: "fm27-assistant", version: "1.0.0" };
@@ -516,9 +537,12 @@ async function handleMessage(message) {
     return;
   }
   if (method === "tools/call") {
+    const t0 = Date.now();
+    const toolName = params?.name;
+    const toolArgs = params?.arguments || {};
+    const targetAction = toolName === "fm_call" ? (toolArgs.action || "unknown") : toolName;
+    const targetParams = toolName === "fm_call" ? (toolArgs.params || {}) : toolArgs;
     try {
-      const toolName = params?.name;
-      const toolArgs = params?.arguments || {};
       let result;
       if (toolName === "fm_discover") {
         const publicTools = tools.filter(tool => developmentMode || !developmentTools.has(tool.name));
@@ -532,9 +556,15 @@ async function handleMessage(message) {
         result = await callTool(toolName, toolArgs);
       }
       const cleanResult = sanitizePayload(result);
+      const elapsed = Date.now() - t0;
+      const paramSummary = JSON.stringify(targetParams).slice(0, 200);
+      writeMcpLog(cleanResult?.ok === false ? "WARN" : "INFO", `${targetAction} (${elapsed}ms) args=${paramSummary}`);
       reply(id, { content: [{ type: "text", text: JSON.stringify(cleanResult, null, 2) }], structuredContent: cleanResult, ...(cleanResult?.ok === false ? { isError: true } : {}) });
     } catch (error) {
-      reply(id, { content: [{ type: "text", text: `调用 ${params?.name} 失败：${error?.message || error}` }], isError: true });
+      const elapsed = Date.now() - t0;
+      const errMsg = error?.message || String(error);
+      writeMcpLog("ERROR", `${targetAction} (${elapsed}ms) args=${JSON.stringify(targetParams).slice(0, 200)} err=${errMsg}`);
+      reply(id, { content: [{ type: "text", text: `调用 ${params?.name} 失败：${errMsg}` }], isError: true });
     }
     return;
   }

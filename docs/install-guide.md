@@ -94,3 +94,14 @@ dotnet build bepinex-plugin/FMAssistant/FMAssistant.csproj -c Release
    - 确认已安装 BepInEx 并先启动过一次游戏生成 `BepInEx\interop\` 目录。
 3. **Q：为什么 Agent 只看到 4 个 MCP 工具？**
    - 这是刻意设计的**渐进式披露（Progressive Disclosure）**网关架构，避免数百个工具定义淹没 Agent 上下文。Agent 会通过 `fm_discover` 按需检索领域工具，再通过 `fm_call` 执行调用。如需兼容旧版客户端，可设置 `FM_ASSISTANT_EXPOSE_ALL_TOOLS=1`。
+
+---
+
+## 7. 持久化日志与问题上报
+
+本插件两端均内置持久化日志，遇到问题时无需靠猜复现：
+
+- **MCP 网关日志**（记录工具名、传入参数摘要、耗时与错误）：
+  `<插件根目录>\logs\mcp.log`（满 2MB 自动轮转为 `mcp.log.old`，亦可通过环境变量 `FM_ASSISTANT_LOG_FILE` 自定义路径）。
+- **游戏内插件日志**（记录游戏内接口执行与异常堆栈）：
+  `<FM27游戏目录>\BepInEx\plugins\FMAssistant\state\live.log` 以及 `<FM27游戏目录>\BepInEx\LogOutput.log`。

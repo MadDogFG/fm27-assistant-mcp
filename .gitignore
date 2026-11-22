@@ -6,5 +6,6 @@ bepinex-plugin/FMAssistant/obj/
 
 # Local logs & temp files
 *.log
+logs/
 .DS_Store
 Thumbs.db
