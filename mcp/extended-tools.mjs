@@ -44,6 +44,7 @@ import { createCaptaincyStandinTools } from "./captaincy-standin-tools.mjs";
 import { createCodeOfConductTools } from "./code-of-conduct-tools.mjs";
 import { createBudgetAdjustmentTools } from "./budget-adjustment-tools.mjs";
 import { createSquadSnapshotTools } from "./squad-snapshot-tools.mjs";
+import { createLiveQueryTools } from "./live-query-tools.mjs";
 import { createTeamSelectionTools } from "./team-selection-tools.mjs";
 import { createTacticSuggestionTools } from "./tactic-suggestion-tools.mjs";
 import { createTacticAnalysisTools } from "./tactic-analysis-tools.mjs";
@@ -127,6 +128,7 @@ export function createExtendedTools(call) {
   const compAwards = createCompetitionsAndAwardsTools(call);
   const playerComparison = createPlayerComparisonTools(call);
   const squadSnapshot = createSquadSnapshotTools(call);
+  const liveQuery = createLiveQueryTools(call);
   const datahubTr = createDatahubAndTransferRoomTools(call);
   const squadPlanner = createSquadPlannerTools(call);
   const jobAdverts = createJobAdvertTools(call);
@@ -387,6 +389,43 @@ export function createExtendedTools(call) {
     ["get_board_request_options", "从当前经理俱乐部的原生BoardRequestSpeakTo菜单读取真实董事会请求；optionPath后预览原动作、确认内容和token，不打开董事会页面。", boardArgs, [], board.get],
     ["get_club_panel_state", "通用低层属性面板读取器（root=club|team|tactic）；常规查询建议优先使用 get_club_history_and_overview、get_club_confidence_and_culture、get_squad_dynamics_and_hierarchy 等聚合预设工具，无需手动猜测属性名。", { root: { type: "string", enum: ["club", "team", "tactic"], default: "club" }, properties: { type: "array", items: text } }, ["properties"], clubState.get],
     ["get_panel_state", "通用低层属性面板读取器（root=human|club|team|training|tactic|player，支持传入 squadIndex 读取指定一线队球员属性）；常规查询建议优先使用各领域专用聚合工具。", { root: { type: "string", enum: ["human", "club", "team", "training", "tactic", "player"], default: "human" }, squadIndex: { type: "integer", minimum: 0, default: 0 }, handle: text, properties: { type: "array", items: text }, contexts: { type: "object", additionalProperties: true } }, ["properties"], panelState.get],
+    ["live_describe", "通用只读通道：自省任意实时节点（如 club/team/human/training/tactic/match 或 { source: 'team', path: 'Players' }）上所有可用属性名、所需上下文与大概类型。查冷门字段时先调它，再调 live_query，无需猜属性名。", {
+      node: { description: "目标节点：字符串（如 'club'、'team.Players'）或对象 { source, path }。", oneOf: [text, { type: "object", properties: { source: text, path: text }, required: ["source"] }] },
+      filter: { type: "string", description: "可选：按关键字过滤属性名或类型。" },
+      limit: { type: "integer", minimum: 1, maximum: 500, default: 120, description: "最多返回多少个属性条目。" },
+      contexts: { type: "object", additionalProperties: true, description: "可选：手动补齐上下文。" }
+    }, ["node"], liveQuery.describe],
+    ["live_query", "通用只读通道：按结构化参数查询任意实时节点的任意属性（支持列表过滤/排序/分页、单节点字段读取、自动补上下文、一层引用解析与 hex 键解码）。业务工具没覆盖的冷门字段优先用它，严格只读。", {
+      node: { description: "目标节点：字符串（如 'club'、'team.Players'）或对象 { source: 'team', path: 'Players/19' }。", oneOf: [text, { type: "object", properties: { source: text, path: text }, required: ["source"] }] },
+      select: { type: "array", items: text, description: "要读取的属性名数组（例如 ['LoanClub', 'LoanClubWageContribution']）。" },
+      where: {
+        type: "array",
+        description: "可选：结构化过滤条件数组。",
+        items: {
+          type: "object",
+          properties: {
+            field: text,
+            op: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "contains", "in"], default: "eq" },
+            value: {}
+          },
+          required: ["field", "value"]
+        }
+      },
+      orderBy: {
+        type: "object",
+        description: "可选：按字段排序。",
+        properties: {
+          field: text,
+          dir: { type: "string", enum: ["asc", "desc"], default: "asc" }
+        },
+        required: ["field"]
+      },
+      limit: { type: "integer", minimum: 1, maximum: 200, default: 30 },
+      offset: { type: "integer", minimum: 0, default: 0 },
+      resolveRefs: { type: "boolean", default: true, description: "是否自动把引用类型解析成 Name（最多一层）。" },
+      raw: { type: "boolean", default: false, description: "是否返回未压缩的原始动态树（默认 false）。" },
+      contexts: { type: "object", additionalProperties: true, description: "可选：手动补充上下文（如 Person/Team/Club）。" }
+    }, ["node", "select"], liveQuery.query],
     ["submit_board_request", "提交游戏当前提供的董事会请求原始业务动作，不能拼事件/请求数值。需要原token，确认时显式acceptConfirmation；仅派发，不宣称董事会已同意或建设等结果完成。", boardArgs, ["optionPath", "expectedChoiceToken", "operationId"], board.execute],
     ["get_transfer_clause_dates", "读取实际报价条款的开始/结束日期和游戏允许的最早/最晚边界；提供dateSource原生日期值后预览，不拼packed日期。", transferDateArgs, ["source", "kind", "collection", "clausePath"], proposal.dateGet],
     ["change_transfer_clause_date", "按游戏正常日期业务事件修改报价条款的开始或结束日期，使用真实GameDate及原token，检查合法边界。仅草稿，不提交或强制转会。", transferDateArgs, ["source", "kind", "collection", "clausePath", "dateSource", "expectedChoiceToken", "operationId"], proposal.dateExecute],

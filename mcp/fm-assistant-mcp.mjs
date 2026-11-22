@@ -13,6 +13,7 @@ import { createTacticTools } from "./tactic-tools.mjs";
 import { createInboxTools } from "./inbox-tools.mjs";
 import { createExtendedTools } from "./extended-tools.mjs";
 import { discoverTools, DOMAIN_META } from "./tool-catalog.mjs";
+import { hexToAscii } from "./live-query-tools.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOG_FILE = process.env.FM_ASSISTANT_LOG_FILE || path.resolve(__dirname, "..", "logs", "mcp.log");
@@ -504,7 +505,7 @@ function sanitizePayload(value) {
     }
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-      const mappedKey = HEX_FIELD_ALIASES[k] || k;
+      const mappedKey = HEX_FIELD_ALIASES[k] || hexToAscii(k);
       out[mappedKey] = sanitizePayload(v);
     }
     return out;
