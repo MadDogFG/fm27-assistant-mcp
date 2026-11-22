@@ -174,7 +174,7 @@ export function createClubOverviewTools(call) {
             return node.items.map(enrichNode);
           }
           if (node.identity && nameByIdentity.has(node.identity)) {
-            return { ...node, name: nameByIdentity.get(node.identity) };
+            return { identity: node.identity, name: nameByIdentity.get(node.identity) };
           }
           const out = {};
           for (const [k, v] of Object.entries(node)) out[k] = enrichNode(v);

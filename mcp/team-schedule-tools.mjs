@@ -36,7 +36,41 @@ export function createTeamScheduleTools(call) {
       const query = { calendar: calendar.handle, weeks: weeks.handle, weekPath: args.weekPath, delegation };
       if (args.weekPath === undefined) {
         const allMonths = months || await scope.subscribe(calendar.handle, "MonthsDropdown", contexts);
-        return action({ scope, query, value: { ok: true, months: allMonths.read.value, weeks: weeks.read.value } });
+        const rawWeeks = weeks.read.value;
+        if (args.compact === false) {
+          return action({ scope, query, value: { ok: true, compact: false, months: allMonths.read.value, weeks: rawWeeks } });
+        }
+        // 紧凑模式：抽取每周索引与可读标题/日期摘要，避免 244KB 嵌套原始树撑爆上下文
+        const extractStrings = (node, bag = []) => {
+          if (bag.length >= 25 || !node) return bag;
+          if (typeof node === "string") {
+            const s = node.replace(/[\u200b-\u200d\ufeff]/g, "").replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").trim();
+            if (s && !/^0x|^[\d.-]+$/.test(s) && s.length > 1 && !bag.includes(s)) bag.push(s);
+          } else if (Array.isArray(node)) {
+            for (const x of node) extractStrings(x, bag);
+          } else if (typeof node === "object") {
+            if (node.kind === "scalar" && node.type === "System.String") extractStrings(node.value, bag);
+            else if (node.fields) extractStrings(Object.values(node.fields), bag);
+            else if (node.items) extractStrings(node.items, bag);
+          }
+          return bag;
+        };
+        const compactWeeks = (rawWeeks?.items || []).map((w, idx) => ({
+          weekPath: String(idx),
+          summary: extractStrings(w).slice(0, 12)
+        }));
+        return action({
+          scope,
+          query,
+          value: {
+            ok: true,
+            compact: true,
+            months: allMonths.read.value,
+            weeksCount: compactWeeks.length,
+            weeks: compactWeeks,
+            note: "默认紧凑模式仅展示周索引与课程摘要；查看或编辑单周详情请传入 weekPath（如 '0'），如需原始全量嵌套树请传 compact: false。"
+          }
+        });
       }
       const week = { source: weeks.handle, path: args.weekPath };
       const date = await scope.subscribe(week, "WeekStartDate", contexts);

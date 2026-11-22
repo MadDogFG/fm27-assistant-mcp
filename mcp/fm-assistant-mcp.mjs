@@ -514,9 +514,13 @@ function sanitizePayload(value) {
 
 const MAX_PAYLOAD_CHARS = 160000; // 约 5 万 Token 安全上限（~160KB），避免误伤正常大名单/全赛季统计，同时拦截恶意膨胀
 
-function trimOversizedArrays(node, maxItems = 50) {
+function trimOversizedArrays(node, maxItems = 50, maxDepth = 6, depth = 0) {
+  if (depth > maxDepth) {
+    if (node && typeof node === "object") return "[嵌套过深已折叠，请传特定路径或分页查询]";
+    return node;
+  }
   if (Array.isArray(node)) {
-    const trimmed = node.slice(0, maxItems).map(item => trimOversizedArrays(item, maxItems));
+    const trimmed = node.slice(0, maxItems).map(item => trimOversizedArrays(item, maxItems, maxDepth, depth + 1));
     if (node.length > maxItems) {
       return {
         _truncated: true,
@@ -530,7 +534,7 @@ function trimOversizedArrays(node, maxItems = 50) {
   }
   if (node && typeof node === "object") {
     const out = {};
-    for (const [k, v] of Object.entries(node)) out[k] = trimOversizedArrays(v, maxItems);
+    for (const [k, v] of Object.entries(node)) out[k] = trimOversizedArrays(v, maxItems, maxDepth, depth + 1);
     return out;
   }
   return node;
@@ -539,9 +543,9 @@ function trimOversizedArrays(node, maxItems = 50) {
 function guardPayloadSize(obj) {
   const json = JSON.stringify(obj);
   if (json.length <= MAX_PAYLOAD_CHARS) return obj;
-  let guarded = trimOversizedArrays(obj, 50);
+  let guarded = trimOversizedArrays(obj, 50, 6);
   if (JSON.stringify(guarded).length > MAX_PAYLOAD_CHARS) {
-    guarded = trimOversizedArrays(obj, 20);
+    guarded = trimOversizedArrays(obj, 20, 4);
   }
   if (guarded && typeof guarded === "object" && !Array.isArray(guarded)) {
     guarded._payloadGuarded = true;
