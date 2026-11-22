@@ -42,6 +42,12 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
   -> 调 `get_club_history_and_overview` + `get_club_vision_draft` + `get_budget_allocation`（别去用 `get_club_panel_state` 盲猜属性名）。
 - **“刚踢完这场比赛踢得怎么样 / 赛中数据咋样”**
   -> 比赛中调 `get_match_live_report` / `get_match_team_stats_and_xg`；踢完了看 `get_past_match_report`。
+- **“帮我安排下周训练 / 哪些人该休息”**
+  -> 调 `get_team_training_schedules` 看训练表，`set_team_training_intensity` 调强度/自动休息；结合 `get_squad_snapshot` 看体能。
+- **“帮我排首发、选队长、分球衣号码”**
+  -> 调 `get_lineup_options` 排首发，`get_captain_options` / `set_captain` 选正副队长，`get_squad_number_options` / `change_squad_numbers` 分号码。
+- **“我想买人/租借/续约，看看球探和候选名单”**
+  -> 调 `get_scouting_knowledge_and_reports`、`list_shortlists` 看候选；填报价或续约草稿先翻 [recruitment.md](references/recruitment.md)（记得止步草稿）。
 
 ---
 

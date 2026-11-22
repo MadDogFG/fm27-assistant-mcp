@@ -512,9 +512,9 @@ function sanitizePayload(value) {
   return value;
 }
 
-const MAX_PAYLOAD_CHARS = 48000;
+const MAX_PAYLOAD_CHARS = 160000; // 约 5 万 Token 安全上限（~160KB），避免误伤正常大名单/全赛季统计，同时拦截恶意膨胀
 
-function trimOversizedArrays(node, maxItems = 20) {
+function trimOversizedArrays(node, maxItems = 50) {
   if (Array.isArray(node)) {
     const trimmed = node.slice(0, maxItems).map(item => trimOversizedArrays(item, maxItems));
     if (node.length > maxItems) {
@@ -522,7 +522,7 @@ function trimOversizedArrays(node, maxItems = 20) {
         _truncated: true,
         _originalCount: node.length,
         _keptCount: maxItems,
-        _note: "数据量过大已自动截断以防 Token 溢出，请使用分页参数或缩小查询范围。",
+        _note: "响应超过 ~5 万 Token 安全阈值，已自动截断超长数组；请使用分页参数（offset/limit）或缩小查询范围。",
         items: trimmed
       };
     }
@@ -539,9 +539,9 @@ function trimOversizedArrays(node, maxItems = 20) {
 function guardPayloadSize(obj) {
   const json = JSON.stringify(obj);
   if (json.length <= MAX_PAYLOAD_CHARS) return obj;
-  let guarded = trimOversizedArrays(obj, 20);
+  let guarded = trimOversizedArrays(obj, 50);
   if (JSON.stringify(guarded).length > MAX_PAYLOAD_CHARS) {
-    guarded = trimOversizedArrays(obj, 8);
+    guarded = trimOversizedArrays(obj, 20);
   }
   if (guarded && typeof guarded === "object" && !Array.isArray(guarded)) {
     guarded._payloadGuarded = true;
