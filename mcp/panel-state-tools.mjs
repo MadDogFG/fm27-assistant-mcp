@@ -29,24 +29,38 @@ export function createPanelStateTools(call) {
       const team = await scope.subscribe("human", "Team");
       const teamRef = { source: team.handle };
       return { handle: tactic.handle, contexts: { human, Human: human, team: teamRef, Team: teamRef } };
+    },
+    player: async (scope, args) => {
+      const idx = Number.isInteger(args.squadIndex) ? args.squadIndex : 0;
+      const human = { source: "human" };
+      const club = await scope.subscribe("human", "Club", { human });
+      const team = await scope.subscribe("human", "Team", { human });
+      const clubRef = { source: club.handle };
+      const teamRef = { source: team.handle };
+      const players = await scope.subscribe(team.handle, "Players", { human, Human: human, team: teamRef, Team: teamRef });
+      const count = players.read?.value?.count ?? (players.read?.value?.items?.length || 0);
+      if (idx < 0 || idx >= count) throw new Error(`squadIndex 越界: ${idx} (共 ${count} 人)`);
+      const pRef = { source: players.handle, path: String(idx) };
+      return { handle: pRef, contexts: { human, Human: human, club: clubRef, Club: clubRef, team: teamRef, Team: teamRef, Person: pRef, InPossession: true } };
     }
   };
   return {
     get: args => client.scope(async scope => {
       const root = args.root || "human";
-      if (!Object.hasOwn(roots, root)) throw new Error("root 需要 human、club、team、training 或 tactic（也可直接传 handle）。");
+      if (!Object.hasOwn(roots, root)) throw new Error("root 需要 human、club、team、training、tactic 或 player（也可直接传 handle）。");
       const names = Array.isArray(args.properties) ? args.properties : [];
       if (!names.length) throw new Error("提供要读取的实时属性名数组（例如 HumanShortlists、HumanJobCentreCurrentAdverts、SquadPlanner、TransferRoomOfferedPlayers）。");
-      const target = args.handle ? { handle: args.handle, contexts: {} } : await roots[root](scope);
+      const target = args.handle ? { handle: args.handle, contexts: {} } : await roots[root](scope, args);
       const contexts = { ...target.contexts, ...(args.contexts || {}) };
       const values = [];
       for (const name of names) {
         try {
           const opened = await scope.subscribe(target.handle, name, contexts);
           values.push({ property: name, value: opened.read.value });
+          await scope.release(opened.handle);
         } catch (error) { values.push({ property: name, error: String(error.message || error) }); }
       }
-      return { ok: true, root, values, liveVerified: false };
+      return { ok: true, root, ...(root === "player" ? { squadIndex: args.squadIndex ?? 0 } : {}), values, liveVerified: false };
     })
   };
 }

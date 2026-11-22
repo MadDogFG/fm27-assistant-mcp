@@ -48,7 +48,7 @@ export function createPlayerAndScoutingInsightsTools(call) {
   function shrinkInsights(obj) {
     const out = {};
     for (const [k, v] of Object.entries(obj)) {
-      if (k === "FullContractDetails" || k === "PlayerReportDetails") {
+      if (k === "FullContractDetails" || k === "PlayerReportDetails" || k === "LoanDetails") {
         if (v && typeof v === "object") out[k] = shrinkInsights(v);
         continue;
       }
@@ -132,6 +132,39 @@ export function createPlayerAndScoutingInsightsTools(call) {
           if (!data[k] || data[k]?.unavailable) data[k] = v;
         }
         data.FullContractDetails = contractProps;
+      }
+
+      // 若球员处于外租或租入状态，自动读取外租俱乐部、租借合同起止日、工资承担、可否召回与买断/出场详情
+      const loanContract = await scope.subscribeOptional(pRef, "LoanContract", contexts, 800);
+      if (loanContract.handle) {
+        const myTeamName = await scope.resolveRefName(team.handle, contexts, 400);
+        const loanClubSub = await scope.subscribeOptional(pRef, "LoanClub", contexts, 500);
+        const onLoanFromSub = await scope.subscribeOptional(pRef, "OnLoanFrom", contexts, 500);
+        const loanClubName = loanClubSub.handle && loanClubSub.read?.value?.identity
+          ? await scope.resolveRefName(loanClubSub.handle, contexts, 400) : null;
+        const onLoanFromName = onLoanFromSub.handle && onLoanFromSub.read?.value?.identity
+          ? await scope.resolveRefName(onLoanFromSub.handle, contexts, 400) : null;
+        if (loanClubSub.handle) await scope.release(loanClubSub.handle);
+        if (onLoanFromSub.handle) await scope.release(onLoanFromSub.handle);
+
+        const pLoanProps = await readProps(scope, pRef, [
+          "IsLoanIn", "CanHumanTerminateLoan", "LoanAppearances",
+          "LoanGoals", "LoanAssists", "LoanAverageRating", "LoanStatusDetails"
+        ], contexts);
+        const lcProps = await readProps(scope, loanContract.handle, [
+          "StartDate", "EndDate", "EndDateDescription", "LoanContractDuration",
+          "HasLoanClubWageContribution", "LoanClubWageContribution",
+          "LoanPlayingMonthlyFee", "LoanUnusedMonthlyFee",
+          "LoanClauses", "LoanOptions"
+        ], contexts);
+        await scope.release(loanContract.handle);
+
+        data.LoanDetails = {
+          ...(loanClubName && loanClubName !== myTeamName ? { loanClubName } : {}),
+          ...(onLoanFromName && onLoanFromName !== myTeamName ? { onLoanFromName } : {}),
+          ...pLoanProps,
+          ...lcProps
+        };
       }
 
       // 实机中球探/教练优缺点、星级、战术角色适配与知识度位于 ClubCoachReport / PlayerReportForContextTeam (FM.UI.PlayerReportReference)
