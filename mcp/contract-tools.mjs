@@ -5,12 +5,13 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 export function createContractTools(call) {
   const client = createLiveClient(call);
   async function context(args, needsChoices, action) {
-    if (!args.source) throw new Error("需要当前实时球员/员工的真实引用 source 和可选 path。");
+    if (!args.source && !Number.isInteger(args.squadIndex)) throw new Error("需要当前实时球员/员工的真实引用 source（或一线队序号 squadIndex）。");
     return client.scope(async scope => {
       const routing = await scope.api("/api/v1/contracts/recipes");
       const recipe = routing.recipes.find(item => item.Kind === args.kind);
       if (!recipe) throw new Error("未知合同草稿条款。");
-      const person = { source: args.source, path: args.path || "" };
+      const resolved = await scope.resolvePlayerRef(args);
+      const person = { source: resolved.source, path: resolved.path };
       const human = { source: "human" };
       const club = await scope.subscribe("human", "Club");
       const clubRef = { source: club.handle };

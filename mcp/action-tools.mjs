@@ -5,29 +5,30 @@ import { resolveNegotiationSession } from "./negotiation-tools.mjs";
 export function createActionTools(call) {
   const client = createLiveClient(call);
   async function context(args, action) {
-    if (!args.source) throw new Error("source 必须是当前实时球员引用的订阅 handle；path 可指定列表中的球员。");
+    if (!args.source && !Number.isInteger(args.squadIndex)) throw new Error("请提供球员实时引用 source 或一线队序号 squadIndex。");
     return client.scope(async scope => {
-      const subject = { source: args.source, path: args.path || "" };
-      const team = await scope.subscribe("human", "Team");
+      const resolved = await scope.resolvePlayerRef(args);
+      const subject = { source: resolved.source, path: resolved.path };
+      const team = resolved.team || await scope.subscribe("human", "Team");
       const contexts = { Human: { source: "human" }, Team: { source: team.handle },
         human: { source: "human" }, team: { source: team.handle }, Records: [{ $reference: subject }] };
       const offered = await scope.subscribe("game", "Actions", contexts);
       const choices = await scope.api("/api/v1/actions/offered", { offered: offered.handle });
-      if (args.action === undefined) return action({ scope, offered, choices, team });
+      if (args.action === undefined) return action({ scope, offered, choices, team, subject });
       const matched = choices.actions.filter(a => a.id === args.action || a.name === args.action);
       if (matched.length !== 1) throw new Error("请选择 get_player_actions 当前返回的 action 名称或 ID。");
       const chosen = matched[0];
       const reference = await scope.subscribe("game", "Action", { ...contexts, ID: { $u32: chosen.id } });
       const items = await scope.subscribe(reference.handle, "Items", contexts);
-      return action({ scope, offered, choices, chosen, reference, items });
+      return action({ scope, offered, choices, chosen, reference, items, subject, team });
     });
   }
 
   async function contractDraft(args, perform) {
     if (!Array.isArray(args.entry) || !args.entry.length || args.entry.some(n => !Number.isInteger(n) || n < 0))
       throw new Error("先读取 PersonOfferContract 原菜单，再提供开始协商的 entry。");
-    return context({ ...args, action: "PersonOfferContract" }, async ({ scope, offered, reference, items }) => {
-      const subject = { source: args.source, path: args.path || "" }, human = { source: "human" };
+    return context({ ...args, action: "PersonOfferContract" }, async ({ scope, offered, reference, items, subject }) => {
+      const human = { source: "human" };
       const club = await scope.subscribe("human", "Club");
       const buyingClub = { source: club.handle };
       const contexts = { Human: human, human, BuyingClub: buyingClub, buyingclub: buyingClub, Club: buyingClub, club: buyingClub,
@@ -39,9 +40,9 @@ export function createActionTools(call) {
   }
 
   async function transferDraft(args, perform) {
-    return context({ source: args.source, path: args.path }, async ({ scope, offered, team }) => {
-      const { session, club, contexts } = await resolveNegotiationSession(scope, { domain: "transfer", source: args.source, path: args.path });
-      const subject = { source: args.source, path: args.path || "" }, teamRef = { source: team.handle };
+    return context(args, async ({ scope, offered, team, subject }) => {
+      const { session, club, contexts } = await resolveNegotiationSession(scope, { domain: "transfer", source: subject.source, path: subject.path });
+      const teamRef = { source: team.handle };
       const allowed = await scope.subscribe(subject, "CanHumanMakeTransferOffer", { ...contexts, Team: teamRef, team: teamRef });
       return perform(scope, { session: session.handle, club: club.handle, selling: contexts.SellingClub.source,
         offered: offered.handle, allowed: allowed.handle }, contexts);
@@ -114,10 +115,10 @@ export function createActionTools(call) {
       return { ok: true, action: chosen, entries, truncated: hasTruncation(items.read.value),
         note: "只展示游戏原生菜单；是否可静默执行及确认要求须读取具体 entry 预览。" };
     }),
-    execute: args => context(args, async ({ scope, offered, chosen, reference, items }) => {
+    execute: args => context(args, async ({ scope, offered, chosen, reference, items, subject }) => {
       if (!chosen.silentExecutionImplemented) throw new Error("此动作的静默执行流程尚未实现。");
       if (!Array.isArray(args.entry) || !args.entry.length || args.entry.some(n => !Number.isInteger(n) || n < 0)) throw new Error("entry 必须为菜单各层的非负整数下标数组。");
-      const query = { offered: offered.handle, action: reference.handle, items: items.handle, entry: args.entry, source: args.source, path: args.path || "" };
+      const query = { offered: offered.handle, action: reference.handle, items: items.handle, entry: args.entry, source: subject.source, path: subject.path };
       const preview = await scope.api("/api/v1/actions/preview", query);
       if (preview.disabled) throw new Error("游戏禁用了该选项。");
       if (preview.requiresConfirmationProtocol) throw new Error("该选项需要尚未恢复的静默确认流程。");

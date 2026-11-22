@@ -3,7 +3,8 @@ import { createLiveClient } from "./live-client.mjs";
 import { createTransferActivityTools } from "./transfer-activity-tools.mjs";
 
 export async function resolveNegotiationSession(scope, args) {
-      const person = { source: args.source, path: args.path || "" }, human = { source: "human" };
+      const resolved = await scope.resolvePlayerRef(args);
+      const person = { source: resolved.source, path: resolved.path }, human = { source: "human" };
       const club = await scope.subscribe("human", "Club");
       const activeClub = { source: club.handle };
       const buyingClub = args.domain === "transfer" && args.buyingClubSource ?
@@ -23,7 +24,7 @@ export function createNegotiationTools(call) {
   const client = createLiveClient(call);
   const activity = createTransferActivityTools(call);
   async function context(args, action) {
-    if (!["contract", "transfer", "promises"].includes(args.domain) || !args.source) throw new Error("请提供 contract/transfer/promises 及实时球员/员工引用 source。");
+    if (!["contract", "transfer", "promises"].includes(args.domain) || (!args.source && !Number.isInteger(args.squadIndex))) throw new Error("请提供 contract/transfer/promises 及实时球员/员工引用 source 或 squadIndex。");
     return client.scope(async scope => {
       const { session, club, contexts } = await resolveNegotiationSession(scope, args);
       const speakto = await scope.subscribe(session.handle, "SpeakTo", contexts);

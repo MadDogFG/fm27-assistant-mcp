@@ -4,7 +4,7 @@ import { resolveNegotiationSession } from "./negotiation-tools.mjs";
 export function createPreContractTools(call) {
   const client = createLiveClient(call);
   async function context(args, perform) {
-    if (!args.source) throw new Error("提供实际球员 source 及可选 path。");
+    if (!args.source && !Number.isInteger(args.squadIndex)) throw new Error("提供实际球员 source 或一线队序号 squadIndex。");
     return client.scope(async scope => {
       const { session, club, contexts } = await resolveNegotiationSession(scope, { ...args, domain: "promises" });
       const routing = await scope.api("/api/v1/contracts/promises/recipes");

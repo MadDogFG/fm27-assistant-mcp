@@ -165,7 +165,19 @@ export function createLiveClient(call) {
       const current = await subscribe(useMatch ? "match" : team.handle, "Tactic", contexts);
       return { team, tactic: current, match, contexts };
     }
-    try { return await action({ api, ready, finish, properties, subscribe, subscribeOptional, release, readAndRelease, resolveRefName, resolveRefList, propertyId, tactic }); }
+    /**
+     * 将 { source, path } 或 { squadIndex } 解析为实时球员引用（自动订阅本队 Players 列表并由 scope 统一释放）
+     */
+    async function resolvePlayerRef(args = {}) {
+      if (args.source) return { source: args.source, path: args.path || "", team: null };
+      if (Number.isInteger(args.squadIndex) && args.squadIndex >= 0) {
+        const team = await subscribe("human", "Team");
+        const players = await subscribe(team.handle, "Players", { human: { source: "human" } });
+        return { source: players.handle, path: String(args.squadIndex), team };
+      }
+      throw new Error("请提供球员/员工实时引用 source 或一线队序号 squadIndex（可从 get_squad_snapshot 获取）。");
+    }
+    try { return await action({ api, ready, finish, properties, subscribe, subscribeOptional, release, readAndRelease, resolveRefName, resolveRefList, propertyId, tactic, resolvePlayerRef }); }
     finally {
       for (const handle of handles.reverse()) {
         try { await api("/api/v1/live/close", { handle }, true); } catch { /* session or connection ended */ }

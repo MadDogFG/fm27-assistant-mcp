@@ -5,7 +5,7 @@ import { resolveNegotiationSession } from "./negotiation-tools.mjs";
 export function createContractStructureTools(call) {
   const client = createLiveClient(call);
   async function context(args, perform) {
-    if (!args.source) throw new Error("提供真实球员或员工 source。");
+    if (!args.source && !Number.isInteger(args.squadIndex)) throw new Error("提供真实球员/员工 source 或一线队序号 squadIndex。");
     return client.scope(async scope => {
       const { session, club, contexts } = await resolveNegotiationSession(scope, { ...args, domain: "contract" });
       const readOnly = await scope.subscribe(session.handle, "NegotiationReadOnly", contexts);

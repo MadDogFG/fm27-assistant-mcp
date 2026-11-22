@@ -7,7 +7,7 @@
 - **球员搜索与候选名单**：按条件检索数据库球员、保存/载入/删除搜索过滤条件（`manage_player_search_filter`），管理多个短名单（创建/重命名/删除/移入/移出）。
 - **转会、租借与合同草稿**：
   - 发起或预览转会/租借报价草稿，编辑转会费、分期、附加条款、出场/位置要求及工资分担比例（`open_transfer_offer_draft`, `stage_transfer_clause`, `change_transfer_structure`）。
-  - 发起续约或自由球员签约谈判草稿，配置年限、薪资、奖金、解约金条款与签约前承诺（`open_contract_draft`, `stage_contract_term`, `change_contract_structure`）。
+  - 发起续约或自由球员签约谈判草稿，配置年限、薪资、奖金、解约金条款与签约前承诺（`open_contract_draft`, `stage_contract_term`, `change_contract_structure`）。本队球员可直接传 `squadIndex`（无需手传 `source` 句柄）：`get_player_actions` → `get_player_action_menu`（`action: "PersonOfferContract"`）→ `get_contract_draft_start` → `open_contract_draft` → `get_contract_term` / `stage_contract_term` / `input_contract_amount`。
 - **试训、体检与特殊联赛**：邀请/延长/结束试训、工作许可状态读取与上诉/体检处理、外租球员召回/终止租借，以及 MLS 工资帽/选秀流程辅助。
 
 ## 重要边界约束
