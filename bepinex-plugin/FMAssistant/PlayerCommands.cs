@@ -50,8 +50,9 @@ public static class PlayerCommands
         var record = row?.Get()?.TryCast<SI.Core.Record>() ?? throw new ArgumentException("Not a dropdown option.");
         if (!record.TryGetValue(InternalCommands.PropertyId("PropertyValue"), out var desired) ||
             !int.TryParse(desired.AsString(), out var number) || number < 0) throw new ArgumentException("Not a mentality choice.");
+        // 直接写入底层数据属性 Mentality（current），避免 MentalityDropdown UI 控件在非战术页未挂载时导致超时
         return CommandOperations.Start(id, "set_mentality", identity, expected, current, desired.AsString(), "tactic_state",
-            () => LiveTools.UpdateProperty(write, TypedValue.CreateCopyFrom(row)));
+            () => LiveTools.UpdateProperty(current, TypedValue.Create(number)));
     }
 
     public static object Instruction(string id, string tactic, string current, string locked, string kind,
