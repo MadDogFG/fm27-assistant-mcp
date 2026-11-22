@@ -3,7 +3,7 @@
 使用 `fm_discover({ domain: "tactics", detail: false })` 发现本领域全部工具，需要参数详情时传 `detail: true`。
 
 ## 核心能力范围
-- **战术槽管理**：读取/切换战术槽（`get_tactic_slots`, `select_tactic_slot`）、新建战术（`get_tactic_creation`, `create_tactic`）、复制/重命名/删除及加载预设战术文件（`list_tactic_files`, `manage_tactic_slot`）。
+- **战术槽管理**：读取/切换战术槽（`get_tactic_slots`, `select_tactic_slot`）、新建战术（`get_tactic_creation`, `create_tactic`）、复制/重命名/删除及加载预设战术文件（`list_tactic_files`, `manage_tactic_slot`）。注：`get_tactic_slots` 仅返回槽位元数据，查看当前首发 11 人及场上站位请调用 `get_lineup_options`（或 `get_tactic_analysis`）。
 - **阵型与位置角色**：持球/无球阵型调整、位置角色与职责切换、查看助教战术建议与熟悉度/复杂度评估（`get_tactic_analysis`, `get_tactic_suggestions`, `apply_tactic_suggestion`）。
 - **球队与个人指令**：心态（`set_mentality`）、球队战术指令、个人针对性指令（`set_tactic_instruction`, `set_player_instruction`）。
 - **针对性指令（Opposition Instructions）**：按对手球员或按对手位置设置紧逼、铲断、压迫与弱势脚（`get_opposition_instructions`, `set_opposition_instruction`）。

@@ -456,6 +456,22 @@ const gatewayTools = [
   },
 ];
 
+function sanitizePayload(value) {
+  if (typeof value === "string") {
+    return value
+      .replace(/[\u200b-\u200d\ufeff]/g, "")
+      .replace(/\u0001[^\u0002]*\u0002/g, "")
+      .replace(/\u0001/g, "");
+  }
+  if (Array.isArray(value)) return value.map(sanitizePayload);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = sanitizePayload(v);
+    return out;
+  }
+  return value;
+}
+
 async function handleMessage(message) {
   if (!message || message.jsonrpc !== "2.0") return;
   const { id, method, params } = message;
@@ -496,7 +512,8 @@ async function handleMessage(message) {
       } else {
         result = await callTool(toolName, toolArgs);
       }
-      reply(id, { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, ...(result?.ok === false ? { isError: true } : {}) });
+      const cleanResult = sanitizePayload(result);
+      reply(id, { content: [{ type: "text", text: JSON.stringify(cleanResult, null, 2) }], structuredContent: cleanResult, ...(cleanResult?.ok === false ? { isError: true } : {}) });
     } catch (error) {
       reply(id, { content: [{ type: "text", text: `调用 ${params?.name} 失败：${error?.message || error}` }], isError: true });
     }
