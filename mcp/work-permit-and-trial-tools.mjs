@@ -52,6 +52,10 @@ export function createWorkPermitAndTrialTools(call) {
         scope.subscribeOptional(pRef, "TrialLengthInWeeks", ctx, 700)
       ]);
       const inTrial = scalar(isTrial.read?.value) === "True";
+      let trialClubName = null;
+      if (tClub.handle && tClub.read?.value?.identity) {
+        trialClubName = await scope.resolveRefName(tClub.handle, ctx, 500);
+      }
       if (action === "read") {
         return {
           ok: true,
@@ -59,6 +63,7 @@ export function createWorkPermitAndTrialTools(call) {
           squadIndex,
           isTrialIn: inTrial,
           trialClub: tClub.read?.value ?? null,
+          trialClubName,
           trialLengthInWeeks: scalar(tWeeks.read?.value)
         };
       }

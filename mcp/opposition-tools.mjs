@@ -28,8 +28,12 @@ export function createOppositionTools(call) {
       const mode = args.mode || "players";
       if (!["players", "positions"].includes(mode)) throw new Error("mode需要players或positions。");
       const rows = await scope.subscribe(instructions.handle, mode === "players" ? "OppositionPredictedLineupInstructions" : "OppositionAllPositionsInstructions", contexts);
-      if (args.rowPath === undefined) return { ok: true, mode, rows: rows.read.value, opponent: opponent.read.value,
-        nextOpponent: nextOpponent.read.value, fixture: fixture?.read.value, kinds: Object.keys(recipes), valid: valid.read.value, liveVerified: false };
+      if (args.rowPath === undefined) {
+        const opponentName = await scope.resolveRefName(opponent.handle, contexts, 500);
+        const nextOpponentName = await scope.resolveRefName(nextOpponent.handle, contexts, 500);
+        return { ok: true, mode, rows: rows.read.value, opponent: opponent.read.value, opponentName,
+          nextOpponent: nextOpponent.read.value, nextOpponentName, fixture: fixture?.read.value, kinds: Object.keys(recipes), valid: valid.read.value, liveVerified: false };
+      }
       if (typeof args.rowPath !== "string" || !args.rowPath || !recipes[args.kind]) throw new Error("从原名单选择rowPath和合法kind。");
       const row = { source: rows.handle, path: args.rowPath };
       const index = await scope.subscribe(row, "Index", contexts);

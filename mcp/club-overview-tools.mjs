@@ -126,8 +126,10 @@ export function createClubOverviewTools(call) {
     history: () => withClubAndTeam(async (scope, club, _team, contexts) => {
       const values = await readProperties(scope, club.handle, [
         "YearFounded", "BackgroundShort", "HistoryHonours", "Legends", "Icons",
-        "AffiliatedClubsCount", "AffiliatedClubsList", "YouthTeams", "StaffVacancies"
+        "AffiliatedClubsCount", "StaffVacancies"
       ], contexts);
+      const affiliatedClubs = await scope.resolveRefList(club.handle, "AffiliatedClubsList", contexts, 15);
+      const youthTeams = await scope.resolveRefList(club.handle, "YouthTeams", contexts, 10);
       return {
         ok: true,
         clubIdentity: club.read.value?.identity ?? null,
@@ -137,8 +139,8 @@ export function createClubOverviewTools(call) {
         legends: values.Legends,
         icons: values.Icons,
         affiliatedClubsCount: scalar(values.AffiliatedClubsCount),
-        affiliatedClubs: values.AffiliatedClubsList,
-        youthTeams: values.YouthTeams,
+        affiliatedClubs,
+        youthTeams,
         staffVacancies: scalar(values.StaffVacancies),
         liveVerified: true
       };

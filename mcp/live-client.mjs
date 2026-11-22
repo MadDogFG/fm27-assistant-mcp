@@ -105,6 +105,36 @@ export function createLiveClient(call) {
       if (sub.handle) await release(sub.handle);
       return { ok: !unavail, value: val, scalar: scalar(val), unavailable: unavail };
     }
+    // 对任意 ClubReference / TeamReference / PersonReference / CompetitionReference 解析出可读 Name
+    async function resolveRefName(source, knownContexts = {}, timeoutMs = 500) {
+      if (!source) return null;
+      const r = await readAndRelease(source, "Name", knownContexts, timeoutMs);
+      if (r.scalar) return r.scalar;
+      const r2 = await readAndRelease(source, "ShortName", knownContexts, timeoutMs);
+      return r2.scalar || null;
+    }
+    // 批量解析列表内每个 Reference 元素的 Name 并释放列表句柄
+    async function resolveRefList(source, propName, knownContexts = {}, maxItems = 12) {
+      const sub = await subscribeOptional(source, propName, knownContexts, 1200);
+      if (!sub.handle || sub.read?.value?.kind !== "list") {
+        if (sub.handle) await release(sub.handle);
+        return sub.read?.value ?? null;
+      }
+      const items = sub.read.value.items || [];
+      const out = [];
+      for (let i = 0; i < Math.min(maxItems, items.length); i++) {
+        const refDesc = { source: sub.handle, path: String(i) };
+        const name = await resolveRefName(refDesc, knownContexts, 500);
+        out.push({
+          index: i,
+          type: items[i]?.type ?? null,
+          identity: items[i]?.identity ?? null,
+          ...(name ? { name } : {})
+        });
+      }
+      await release(sub.handle);
+      return { count: sub.read.value.count ?? items.length, truncated: items.length > maxItems, items: out };
+    }
     // Some panel/session bindings never become ready when the game has no such session. A short
     // timeout and early bail-out matters: repeatedly polling such a channel while holding a raw
     // native reference has crashed FM (2026-11-20, ProposedAffiliateClubs). Callers should pass a
@@ -135,7 +165,7 @@ export function createLiveClient(call) {
       const current = await subscribe(useMatch ? "match" : team.handle, "Tactic", contexts);
       return { team, tactic: current, match, contexts };
     }
-    try { return await action({ api, ready, finish, properties, subscribe, subscribeOptional, release, readAndRelease, propertyId, tactic }); }
+    try { return await action({ api, ready, finish, properties, subscribe, subscribeOptional, release, readAndRelease, resolveRefName, resolveRefList, propertyId, tactic }); }
     finally {
       for (const handle of handles.reverse()) {
         try { await api("/api/v1/live/close", { handle }, true); } catch { /* session or connection ended */ }

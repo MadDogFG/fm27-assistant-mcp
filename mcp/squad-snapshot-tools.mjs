@@ -73,6 +73,7 @@ export function createSquadSnapshotTools(call) {
       }
 
       const end = Math.min(total, start + maxCount);
+      const myTeamName = await scope.resolveRefName(team.handle, baseCtx, 500);
       const rows = [];
       let degradedFields = 0;
 
@@ -97,6 +98,16 @@ export function createSquadSnapshotTools(call) {
         let contractExpires = null;
         let playingTime = null;
         let wage = null;
+        let loanClub = null;
+
+        const loanSub = await scope.subscribeOptional(pRef, "LoanClub", pCtx, 400);
+        if (loanSub.handle) {
+          if (loanSub.read?.value?.identity) {
+            const lcName = await scope.resolveRefName(loanSub.handle, pCtx, 400);
+            if (lcName && lcName !== myTeamName) loanClub = lcName;
+          }
+          await scope.release(loanSub.handle);
+        }
 
         if (includeContractAndStars || !position) {
           const reportSub = await scope.subscribeOptional(pRef, "ClubCoachReport", pCtx, 700);
@@ -142,6 +153,7 @@ export function createSquadSnapshotTools(call) {
           condition: condR.scalar,
           sharpness: sharpR.scalar,
           morale: moraleR.scalar,
+          ...(loanClub ? { loanClub } : {}),
           ...(includeContractAndStars ? { caStars, paStars, wage, contractExpires, playingTime } : {})
         });
       }

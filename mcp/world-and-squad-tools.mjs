@@ -80,6 +80,8 @@ export function createWorldAndSquadTools(call) {
         await scope.release(fixSub.handle);
       }
 
+      const currentCompetitions = await scope.resolveRefList(team.handle, "CurrentComps", contexts, 15);
+
       const newsMax = Math.max(1, Math.min(100, Number(transferNewsLimit) || 8));
       return {
         ok: true,
@@ -90,7 +92,7 @@ export function createWorldAndSquadTools(call) {
         latestScoresHumanFixtures: trimList(humanProps.LatestScoresHumanFixtures, 15),
         aroundTheWorldTransferStories: trimList(humanProps.HumanAroundTheWorldTransferStories, newsMax),
         next5Fixtures,
-        currentCompetitions: teamProps.CurrentComps,
+        currentCompetitions,
         recentFormAllComps: teamProps.RecentFormValuesAllComps,
         liveVerified: true
       };
