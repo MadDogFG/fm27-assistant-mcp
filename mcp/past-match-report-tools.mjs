@@ -70,6 +70,7 @@ export function createPastMatchReportTools(call) {
       for (const prop of ["LastMatchAnalysis", "IsFixtureResults"]) {
         const sub = await scope.subscribeOptional({ source: team.handle }, prop, matchCtx, 1200);
         teamReports[prop] = sub.handle ? decodeValue(sub.read?.value ?? null, idMap) : { unavailable: sub.unavailable || "no_handle" };
+        if (sub.handle) await scope.release(sub.handle);
       }
 
       const matchDetails = {};
@@ -77,6 +78,7 @@ export function createPastMatchReportTools(call) {
         for (const prop of ["MatchReportData", "IsViewablePastMatch", "PastMatchHighlightsDropdown", "PastMatchPlayerTacticData", "PastMatchOOPPlayerDataAvailable"]) {
           const sub = await scope.subscribeOptional(matchRef, prop, matchCtx, 1200);
           matchDetails[prop] = sub.handle ? decodeValue(sub.read?.value ?? null, idMap) : { unavailable: sub.unavailable || "no_handle" };
+          if (sub.handle) await scope.release(sub.handle);
         }
       }
 

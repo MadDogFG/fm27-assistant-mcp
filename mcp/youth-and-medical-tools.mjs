@@ -57,9 +57,11 @@ export function createYouthAndMedicalTools(call) {
         const sub = await scope.subscribeOptional({ source: club.handle }, name, ctx, 900);
         if (sub.handle) {
           out[name] = decodeValue(sub.read?.value ?? null, idMap);
+          await scope.release(sub.handle);
         } else {
           const teamSub = await scope.subscribeOptional({ source: team.handle }, name, ctx, 700);
           out[name] = teamSub.handle ? decodeValue(teamSub.read?.value ?? null, idMap) : { unavailable: teamSub.unavailable || sub.unavailable || "no_handle" };
+          if (teamSub.handle) await scope.release(teamSub.handle);
         }
       }
       return { ok: true, readOnly: true, youthIntake: out };
@@ -99,6 +101,7 @@ export function createYouthAndMedicalTools(call) {
       for (const prop of ["Name", "IsInjured", "InjuryTreatment", "Condition", "Sharpness"]) {
         const sub = await scope.subscribeOptional(pRef, prop, ctx, 800);
         out[prop] = sub.handle ? decodeValue(sub.read?.value ?? null, idMap) : { unavailable: sub.unavailable || "no_handle" };
+        if (sub.handle) await scope.release(sub.handle);
       }
       return { ok: true, readOnly: true, squadIndex, player: out };
     });

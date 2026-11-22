@@ -76,6 +76,11 @@ export function createLiveClient(call) {
         if (!Object.hasOwn(knownContexts, key)) throw new Error(`${name} 缺少上下文 ${key}`);
         contexts[key] = knownContexts[key];
       }
+      if (handles.length >= 110) {
+        // 安全水位保护：保留最初几个根上下文句柄（如 human/Team/Club），清理中间临时句柄防止撞 128 上限
+        const victim = handles.splice(4, 1)[0];
+        if (victim) { try { await api("/api/v1/live/close", { handle: victim }, true); } catch {} }
+      }
       const opened = await api("/api/v1/live/open", { ...descriptor(source), property: metadata.id, contexts }, true);
       handles.push(opened.handle);
       try {

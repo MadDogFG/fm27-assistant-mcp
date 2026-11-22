@@ -456,6 +456,18 @@ const gatewayTools = [
   },
 ];
 
+const HEX_FIELD_ALIASES = {
+  "0x71764a36": "label",
+  "0x7074766c": "value",
+  "0x5374726e": "text",
+  "0x69642020": "id",
+  "0x6e616d65": "name",
+  "0x7469746c": "title",
+  "0x696e6478": "index",
+  "0x34453354": "children",
+  "0x526f7744": "rowData",
+};
+
 function sanitizePayload(value) {
   if (typeof value === "string") {
     return value
@@ -465,8 +477,15 @@ function sanitizePayload(value) {
   }
   if (Array.isArray(value)) return value.map(sanitizePayload);
   if (value && typeof value === "object") {
+    // 折叠 FM 原生 { kind: "scalar", type: "...", value: ... } 为纯标量，大幅压缩输出体积
+    if (value.kind === "scalar" && Object.hasOwn(value, "value") && Object.keys(value).length <= 3) {
+      return sanitizePayload(value.value);
+    }
     const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = sanitizePayload(v);
+    for (const [k, v] of Object.entries(value)) {
+      const mappedKey = HEX_FIELD_ALIASES[k] || k;
+      out[mappedKey] = sanitizePayload(v);
+    }
     return out;
   }
   return value;
