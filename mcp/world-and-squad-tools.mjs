@@ -33,7 +33,7 @@ export function createWorldAndSquadTools(call) {
 
   return {
     // MGR-R09, MGR-R16: 世界新闻、赛程、比分及赛事列表读取
-    worldAndCompetitions: () => withRoots(async (scope, _club, team, contexts) => {
+    worldAndCompetitions: ({ compact = true, transferNewsLimit = 8 } = {}) => withRoots(async (scope, _club, team, contexts) => {
       const humanProps = await readProperties(scope, "human", [
         "HumanTodayFixtures", "LatestScoresComps", "LatestScoresHumanFixtures",
         "HumanAroundTheWorldTransferStories"
@@ -41,14 +41,54 @@ export function createWorldAndSquadTools(call) {
       const teamProps = await readProperties(scope, team.handle, [
         "Next5Fixtures", "CurrentComps", "RecentFormValuesAllComps"
       ], contexts);
+
+      const trimList = (val, limit) => {
+        if (!compact || !val || val.kind !== "list" || !Array.isArray(val.items) || val.items.length <= limit) return val;
+        return {
+          kind: "list",
+          count: val.count ?? val.items.length,
+          truncated: true,
+          note: `紧凑模式仅保留前 ${limit} 条，如需全量请传 compact: false`,
+          items: val.items.slice(0, limit)
+        };
+      };
+
+      // 尝试解析近5场赛程的可读名称/对手/日期信息
+      let next5Fixtures = teamProps.Next5Fixtures;
+      const fixSub = await scope.subscribeOptional(team.handle, "Next5Fixtures", contexts, 1000);
+      if (fixSub.handle && fixSub.read?.value?.kind === "list" && Array.isArray(fixSub.read.value.items)) {
+        const enriched = [];
+        const items = fixSub.read.value.items;
+        for (let i = 0; i < Math.min(5, items.length); i++) {
+          const fRef = { source: fixSub.handle, path: String(i) };
+          const homeR = await scope.readAndRelease(fRef, "HomeTeamName", contexts, 400);
+          const awayR = await scope.readAndRelease(fRef, "AwayTeamName", contexts, 400);
+          const dateR = await scope.readAndRelease(fRef, "Date", contexts, 400);
+          const compR = await scope.readAndRelease(fRef, "CompetitionName", contexts, 400);
+          enriched.push({
+            index: i,
+            identity: items[i]?.identity ?? null,
+            homeTeam: homeR.scalar || null,
+            awayTeam: awayR.scalar || null,
+            competition: compR.scalar || null,
+            date: dateR.scalar || null,
+            ...(!homeR.scalar && !awayR.scalar ? { raw: items[i] } : {})
+          });
+        }
+        next5Fixtures = enriched;
+        await scope.release(fixSub.handle);
+      }
+
+      const newsMax = Math.max(1, Math.min(100, Number(transferNewsLimit) || 8));
       return {
         ok: true,
+        compact: Boolean(compact),
         teamIdentity: team.read.value?.identity ?? null,
-        todayFixtures: humanProps.HumanTodayFixtures,
-        latestScoresComps: humanProps.LatestScoresComps,
-        latestScoresHumanFixtures: humanProps.LatestScoresHumanFixtures,
-        aroundTheWorldTransferStories: humanProps.HumanAroundTheWorldTransferStories,
-        next5Fixtures: teamProps.Next5Fixtures,
+        todayFixtures: trimList(humanProps.HumanTodayFixtures, 15),
+        latestScoresComps: trimList(humanProps.LatestScoresComps, 15),
+        latestScoresHumanFixtures: trimList(humanProps.LatestScoresHumanFixtures, 15),
+        aroundTheWorldTransferStories: trimList(humanProps.HumanAroundTheWorldTransferStories, newsMax),
+        next5Fixtures,
         currentCompetitions: teamProps.CurrentComps,
         recentFormAllComps: teamProps.RecentFormValuesAllComps,
         liveVerified: true

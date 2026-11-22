@@ -490,7 +490,7 @@ export function createExtendedTools(call) {
     ["get_club_confidence_and_culture", "只读读取董事会文化、球迷文化、球迷对董事会影响力、管理层支持反馈及月度支持度（CLB-R12）。", {}, [], clubOverview.confidence],
     ["get_club_history_and_overview", "只读读取俱乐部建队年份、简介、荣誉列表、名宿/偶像、附属俱乐部、青年队及职员空缺数（CLB-R15/R14）。", {}, [], clubOverview.history],
     ["get_squad_dynamics_and_hierarchy", "只读读取更衣室团队领袖与影响力层级人数、社交群体列表、社交反馈与比赛默契度反馈（SQU-R09）。", {}, [], clubOverview.dynamics],
-    ["get_world_and_competitions", "只读读取今日赛程、最新比分赛事、近期5场赛程、本队参赛赛事、全赛事近期状态及全球转会新闻（MGR-R09/R16）。", {}, [], worldAndSquad.worldAndCompetitions],
+    ["get_world_and_competitions", "只读读取今日赛程、最新比分赛事、近期5场赛程（含主客队与赛事名）、本队参赛赛事、全赛事近期状态及全球转会新闻（默认 compact=true 仅取前8条转会新闻防24KB膨胀，全量传 compact: false）。", { compact: { type: "boolean", default: true }, transferNewsLimit: { type: "integer", minimum: 1, maximum: 100, default: 8 } }, [], worldAndSquad.worldAndCompetitions],
     ["get_squad_compliance_and_contracts", "只读读取全赛事当前/潜在停赛名单与人数、一线队可用人数、下场资格规则、注册合规状态、即将到期合同与外租人数（SQU-R05/R17/R18）。", {}, [], worldAndSquad.complianceAndContracts],
     ["get_development_and_team_report", "只读读取发展中心一线队报告、评价星级、潜力评价及球队整体表现报告（TRN-R14/R19）。", {}, [], worldAndSquad.developmentReport],
     ["get_match_team_stats_and_xg", "只读读取直播比赛双方比分、进球名单、控球率、射门/射正、角球、犯规、观众与xG（默认不拉取巨型射门坐标数组，需坐标请传 includeShotMap: true）。", { includeShotMap: { type: "boolean", default: false } }, [], matchAnalytics.teamStatsAndXg],

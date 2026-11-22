@@ -1,6 +1,6 @@
 import { createLiveClient, clean, scalar } from "./live-client.mjs";
 
-// 一行一人紧凑阵容快照（get_squad_snapshot）：解决全队概览需反复逐个调用且易撞 128 订阅上限的问题
+// 一行一人紧凑阵容快照（get_squad_snapshot）
 export function createSquadSnapshotTools(call) {
   const client = createLiveClient(call);
 
@@ -15,7 +15,20 @@ export function createSquadSnapshotTools(call) {
           return clean(f["0x71764a36"]?.value || f["0x5374726e"]?.value || f["0x6e616d65"]?.value || "");
         })
         .filter(Boolean);
-      return names.length ? names.join("/") : null;
+      if (!names.length) return null;
+      if (names.length <= 3) return names.join("/");
+      return `${names.slice(0, 2).join("/")} 等${names.length}位置`;
+    }
+    return null;
+  }
+
+  function extractAbilityText(val) {
+    if (!val) return null;
+    if (val.kind === "scalar") return clean(val.value) || null;
+    if (val.kind === "record" && val.fields) {
+      const f = val.fields;
+      const picked = clean(f["0x71764a36"]?.value || f["0x5374726e"]?.value || f["0x7074766c"]?.value || "");
+      return picked || null;
     }
     return null;
   }
@@ -57,7 +70,10 @@ export function createSquadSnapshotTools(call) {
         const ageR = await scope.readAndRelease(pRef, "Age", pCtx, 500);
         const posR = await scope.readAndRelease(pRef, "PositionString", pCtx, 500);
         const condR = await scope.readAndRelease(pRef, "Condition", pCtx, 500);
-        const sharpR = await scope.readAndRelease(pRef, "MatchSharpness", pCtx, 500);
+        let sharpR = await scope.readAndRelease(pRef, "Sharpness", pCtx, 500);
+        if (!sharpR.ok || sharpR.scalar === null) {
+          sharpR = await scope.readAndRelease(pRef, "MatchSharpness", pCtx, 400);
+        }
         const moraleR = await scope.readAndRelease(pRef, "Morale", pCtx, 500);
 
         let position = posR.scalar || null;
@@ -75,25 +91,29 @@ export function createSquadSnapshotTools(call) {
               position = extractPositionText(sp.value);
             }
             if (includeContractAndStars) {
-              const caR = await scope.readAndRelease(reportSub.handle, "CurrentAbilityStars", pCtx, 500);
-              const paR = await scope.readAndRelease(reportSub.handle, "PotentialAbilityStars", pCtx, 500);
-              caStars = caR.scalar;
-              paStars = paR.scalar;
+              const caR = await scope.readAndRelease(reportSub.handle, "ScoutedCurrentAbilityInfo", pCtx, 500);
+              const paR = await scope.readAndRelease(reportSub.handle, "ScoutedPotentialAbilityInfo", pCtx, 500);
+              caStars = extractAbilityText(caR.value);
+              paStars = extractAbilityText(paR.value);
             }
             await scope.release(reportSub.handle);
           }
         }
 
         if (includeContractAndStars) {
-          const wageR = await scope.readAndRelease(pRef, "Wage", pCtx, 500);
-          wage = wageR.scalar;
           const fcSub = await scope.subscribeOptional(pRef, "FullContract", pCtx, 600);
           if (fcSub.handle) {
             const expR = await scope.readAndRelease(fcSub.handle, "EndDateDescription", pCtx, 500);
             const ptR = await scope.readAndRelease(fcSub.handle, "AgreedPlayingTimeDescription", pCtx, 500);
+            const fcWageR = await scope.readAndRelease(fcSub.handle, "Wage", pCtx, 500);
             contractExpires = expR.scalar;
             playingTime = ptR.scalar;
+            wage = fcWageR.scalar;
             await scope.release(fcSub.handle);
+          }
+          if (!wage) {
+            const wageR = await scope.readAndRelease(pRef, "Wage", pCtx, 400);
+            wage = wageR.scalar;
           }
         }
 

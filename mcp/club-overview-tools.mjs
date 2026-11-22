@@ -150,7 +150,7 @@ export function createClubOverviewTools(call) {
         "HierarchyTeamLeadersCount", "HierarchyHighlyInfluentialCount",
         "HierarchyInfluentialCount", "SocialGroupFeedbackString",
         "MatchCohesionFeedback", "SocialGroupList",
-        "HierarchyTeamLeaders", "HierarchyHighlyInfluential"
+        "HierarchyTeamLeaders", "HierarchyHighlyInfluential", "HierarchyInfluential"
       ], contexts);
 
       // 建立一线队 identity -> 姓名 映射，避免仅返回晦涩的 identity 字符串
@@ -166,12 +166,21 @@ export function createClubOverviewTools(call) {
       }
       if (playersSub.handle) await scope.release(playersSub.handle);
 
-      const enrichList = listVal => {
-        if (!listVal || listVal.kind !== "list" || !Array.isArray(listVal.items)) return listVal;
-        return listVal.items.map(it => ({
-          identity: it?.identity ?? null,
-          name: it?.identity ? (nameByIdentity.get(it.identity) || null) : null
-        }));
+      const enrichNode = node => {
+        if (node === null || node === undefined) return node;
+        if (Array.isArray(node)) return node.map(enrichNode);
+        if (typeof node === "object") {
+          if (node.kind === "list" && Array.isArray(node.items)) {
+            return node.items.map(enrichNode);
+          }
+          if (node.identity && nameByIdentity.has(node.identity)) {
+            return { ...node, name: nameByIdentity.get(node.identity) };
+          }
+          const out = {};
+          for (const [k, v] of Object.entries(node)) out[k] = enrichNode(v);
+          return out;
+        }
+        return node;
       };
 
       return {
@@ -181,10 +190,11 @@ export function createClubOverviewTools(call) {
           teamLeadersCount: scalar(values.HierarchyTeamLeadersCount),
           highlyInfluentialCount: scalar(values.HierarchyHighlyInfluentialCount),
           influentialCount: scalar(values.HierarchyInfluentialCount),
-          teamLeaders: enrichList(values.HierarchyTeamLeaders),
-          highlyInfluential: enrichList(values.HierarchyHighlyInfluential)
+          teamLeaders: enrichNode(values.HierarchyTeamLeaders),
+          highlyInfluential: enrichNode(values.HierarchyHighlyInfluential),
+          influential: enrichNode(values.HierarchyInfluential)
         },
-        socialGroups: values.SocialGroupList,
+        socialGroups: enrichNode(values.SocialGroupList),
         socialGroupFeedback: clean(scalar(values.SocialGroupFeedbackString)) || values.SocialGroupFeedbackString,
         matchCohesionFeedback: clean(scalar(values.MatchCohesionFeedback)) || values.MatchCohesionFeedback,
         liveVerified: true
