@@ -145,7 +145,7 @@ public static class PlayerManagementCommands
             () =>
             {
                 if (p.ActionRef != null)
-                    FM.Game.PluginContextActionsModule.HandleActionEvent((ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, payload, !isHighRisk || acceptConfirmation, null, null);
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, payload, false, null, null);
                 else
                     GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, null, payload);
             },

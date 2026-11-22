@@ -79,7 +79,7 @@ public static class MedicalCommands
                 if (Record(payload) is { } rec && rec.ContainsKey(0x7772436fu))
                     rec[0x7772436fu] = TypedValue.Create(false);
                 if (p.ActionRef != null)
-                    FM.Game.PluginContextActionsModule.HandleActionEvent((ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, payload, true, null, null);
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, payload, false, null, null);
                 else
                     GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, null, payload);
             },

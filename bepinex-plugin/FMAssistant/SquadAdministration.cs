@@ -146,7 +146,7 @@ public static class SquadAdministration
                 if (NegotiationActions.Record(payload) is { } rec && rec.ContainsKey(0x7772436fu))
                     rec[0x7772436fu] = TypedValue.Create(false);
                 if (pick.ActionRef != null)
-                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.GamePlugin.ActionID)pick.ActionId, pick.EventId, pick.ActionRef, payload, true, null, null);
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.GamePlugin.ActionID)pick.ActionId, pick.EventId, pick.ActionRef, payload, false, null, null);
                 else
                     SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent(pick.EventId, teamRef, payload);
             }, null, null, "captain_action_dispatch_only");
