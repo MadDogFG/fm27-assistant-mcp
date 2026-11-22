@@ -48,31 +48,32 @@ export function createWorldAndSquadTools(call) {
           kind: "list",
           count: val.count ?? val.items.length,
           truncated: true,
-          note: `紧凑模式仅保留前 ${limit} 条，如需全量请传 compact: false`,
-          items: val.items.slice(0, limit)
+          note: `紧凑模式仅保留前 ${limit} 条并省略重复 pairs 字段，如需全量请传 compact: false`,
+          items: val.items.slice(0, limit).map(it => it?.identity ? { type: it.type, identity: it.identity } : it)
         };
       };
 
-      // 尝试解析近5场赛程的可读名称/对手/日期信息
+      // 解析 Next5Fixtures：条目结构为 { 0x71764a36: "4天", 0x7074766c: TeamReference }
       let next5Fixtures = teamProps.Next5Fixtures;
       const fixSub = await scope.subscribeOptional(team.handle, "Next5Fixtures", contexts, 1000);
       if (fixSub.handle && fixSub.read?.value?.kind === "list" && Array.isArray(fixSub.read.value.items)) {
         const enriched = [];
         const items = fixSub.read.value.items;
         for (let i = 0; i < Math.min(5, items.length); i++) {
-          const fRef = { source: fixSub.handle, path: String(i) };
-          const homeR = await scope.readAndRelease(fRef, "HomeTeamName", contexts, 400);
-          const awayR = await scope.readAndRelease(fRef, "AwayTeamName", contexts, 400);
-          const dateR = await scope.readAndRelease(fRef, "Date", contexts, 400);
-          const compR = await scope.readAndRelease(fRef, "CompetitionName", contexts, 400);
+          const f = items[i]?.fields || {};
+          const when = clean(f["0x71764a36"]?.value || "") || null;
+          const oppRefObj = f["0x7074766c"];
+          let opponent = null;
+          if (oppRefObj?.identity) {
+            const oppDesc = { source: fixSub.handle, path: `${i}/0x7074766c` };
+            const nameR = await scope.readAndRelease(oppDesc, "Name", { ...contexts, team: oppDesc, Team: oppDesc }, 600);
+            opponent = nameR.scalar || null;
+          }
           enriched.push({
             index: i,
-            identity: items[i]?.identity ?? null,
-            homeTeam: homeR.scalar || null,
-            awayTeam: awayR.scalar || null,
-            competition: compR.scalar || null,
-            date: dateR.scalar || null,
-            ...(!homeR.scalar && !awayR.scalar ? { raw: items[i] } : {})
+            when,
+            opponent,
+            opponentIdentity: oppRefObj?.identity ?? null
           });
         }
         next5Fixtures = enriched;

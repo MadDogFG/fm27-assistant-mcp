@@ -27,8 +27,23 @@ export function createSquadSnapshotTools(call) {
     if (val.kind === "scalar") return clean(val.value) || null;
     if (val.kind === "record" && val.fields) {
       const f = val.fields;
-      const picked = clean(f["0x71764a36"]?.value || f["0x5374726e"]?.value || f["0x7074766c"]?.value || "");
-      return picked || null;
+      const tier = clean(f["0x6150344a"]?.value || f["0x71764a36"]?.value || f["0x5374726e"]?.value || f["0x776e5438"]?.value || "");
+      const rangeObj = f["0x57487955"]?.fields || f["0x57487955"];
+      const minV = rangeObj?.Min?.value ?? rangeObj?.Min;
+      const maxV = rangeObj?.Max?.value ?? rangeObj?.Max;
+      if (tier && minV !== undefined) {
+        return minV === maxV ? `${tier}(${minV}/20)` : `${tier}(${minV}-${maxV}/20)`;
+      }
+      return tier || (minV !== undefined ? `${minV}/20` : null);
+    }
+    return null;
+  }
+
+  function extractWageText(val) {
+    if (!val) return null;
+    if (val.kind === "scalar") return clean(val.value) || null;
+    if (val.kind === "record" && val.fields) {
+      return clean(val.fields["0x71764a36"]?.value || val.fields["0x5374726e"]?.value || "") || null;
     }
     return null;
   }
@@ -108,12 +123,12 @@ export function createSquadSnapshotTools(call) {
             const fcWageR = await scope.readAndRelease(fcSub.handle, "Wage", pCtx, 500);
             contractExpires = expR.scalar;
             playingTime = ptR.scalar;
-            wage = fcWageR.scalar;
+            wage = extractWageText(fcWageR.value);
             await scope.release(fcSub.handle);
           }
           if (!wage) {
             const wageR = await scope.readAndRelease(pRef, "Wage", pCtx, 400);
-            wage = wageR.scalar;
+            wage = extractWageText(wageR.value);
           }
         }
 
