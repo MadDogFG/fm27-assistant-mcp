@@ -18,8 +18,8 @@
 
 ## 第二步：部署 FMAssistant 插件
 
-### 方式 A：使用预编译 Release 包（推荐）
-将 `FMAssistant.dll` 复制到：
+### 方式 A：直接使用仓库预编译 DLL（推荐，无需 .NET SDK）
+直接将仓库内的 `dist/FMAssistant.dll` 复制到：
 ```text
 <游戏目录>\BepInEx\plugins\FMAssistant\FMAssistant.dll
 ```

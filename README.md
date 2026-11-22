@@ -44,7 +44,7 @@
 
 ### 2. 安装 BepInEx 并部署插件
 1. 将 BepInEx 6 解压至 *Football Manager 27* 游戏根目录，**启动游戏进入主菜单后退出**（自动生成 `BepInEx\interop` 目录）。
-2. 运行一键编译部署脚本（或将预编译好的 `FMAssistant.dll` 放入 `<游戏目录>\BepInEx\plugins\FMAssistant\`）：
+2. **部署插件（免编译，无需 .NET SDK）**：将仓库内预编译好的 `dist/FMAssistant.dll` 直接复制到 `<游戏目录>\BepInEx\plugins\FMAssistant\FMAssistant.dll`；若需自行从源码编译，可运行：
    ```powershell
    powershell -ExecutionPolicy Bypass -File scripts/build-plugin.ps1 -GameDir "你的FM27游戏根目录"
    ```

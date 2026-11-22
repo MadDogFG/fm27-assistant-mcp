@@ -51,6 +51,11 @@ if (-not (Test-Path $DllSource)) {
     Write-Error "未找到编译产物：$DllSource"
 }
 
+# 同步更新仓库 dist/FMAssistant.dll 方便无 .NET SDK 用户/AI 直接部署
+$DistDir = Join-Path $RepoRoot "dist"
+New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+Copy-Item -Path $DllSource -Destination (Join-Path $DistDir "FMAssistant.dll") -Force
+
 if (-not $SkipDeploy) {
     $PluginTargetDir = Join-Path $GameDir "BepInEx\plugins\FMAssistant"
     New-Item -ItemType Directory -Force -Path $PluginTargetDir | Out-Null

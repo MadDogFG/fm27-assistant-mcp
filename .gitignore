@@ -2,6 +2,8 @@
 bepinex-plugin/FMAssistant/bin/
 bepinex-plugin/FMAssistant/obj/
 *.dll
+!dist/
+!dist/FMAssistant.dll
 *.pdb
 
 # Local logs & temp files
