@@ -67,7 +67,7 @@ public static class PlayerManagementCommands
         return new { ok = true, actions, scope = "current_game_offered_normal_person_menu_families", liveVerified = false };
     }
 
-    private sealed record Prepared(uint Action, string Target, TypedValue Payload, string Label, bool Disabled, bool Confirmation, TypedValue ConfirmationData, string Token);
+    private sealed record Prepared(uint Action, InteropReference ActionRef, string Target, TypedValue Payload, string Label, bool Disabled, bool Confirmation, TypedValue ConfirmationData, string Token);
     private static Prepared Prepare(string offered, string action, string items, string entryJson)
     {
         var available = Channel(offered, "game", "Actions");
@@ -114,7 +114,7 @@ public static class PlayerManagementCommands
         var label = Field(row, "Text", false)?.AsString();
         var token = DispatchJournal.Fingerprint(LiveTools.JsonText(new { session = LiveTools.SessionId, epoch = LiveTools.CurrentEpoch,
             human = LiveTools.GetReference("human").GetPersistentIdentity(), id, records, payload = NativeValueFingerprint.Compute(payload), disabled, requiresConfirmation }));
-        return new Prepared(id, DispatchJournal.Fingerprint(records), TypedValue.CreateCopyFrom(payload), label, disabled, requiresConfirmation, confirmation, token);
+        return new Prepared(id, LiveTools.GetReference(action), DispatchJournal.Fingerprint(records), TypedValue.CreateCopyFrom(payload), label, disabled, requiresConfirmation, confirmation, token);
     }
     public static object Preview(string offered, string action, string items, string entry)
     {
@@ -133,7 +133,13 @@ public static class PlayerManagementCommands
         if (p.Confirmation && acceptConfirmation && Record(payload) is { } rec && rec.ContainsKey(0x7772436fu))
             rec[0x7772436fu] = TypedValue.Create(false);
         return ActionCommands.DispatchDomain(id, "person_management_menu_action", p.Target, p.Token,
-            () => GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, null, payload),
+            () =>
+            {
+                if (p.ActionRef != null)
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, payload, !p.Confirmation, null, null);
+                else
+                    GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, null, payload);
+            },
             null, null, "person_management_menu_dispatch");
     }
 }

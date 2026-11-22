@@ -13,7 +13,7 @@ namespace FMAssistant;
 public static class MedicalCommands
 {
     private static bool Allowed(uint action) => action == (uint)ActionID.PersonRequestPhysioReport || action == (uint)ActionID.PersonRequestInjuryRiskUpdate;
-    private sealed record Prepared(uint Action, string Target, TypedValue Payload, string Label, bool Disabled, bool Confirmation, string Token);
+    private sealed record Prepared(uint Action, InteropReference ActionRef, string Target, TypedValue Payload, string Label, bool Disabled, bool Confirmation, string Token);
     private static Prepared Prepare(string offered, string action, string items, string entryJson)
     {
         var available = Channel(offered, "game", "Actions");
@@ -57,7 +57,7 @@ public static class MedicalCommands
         var label = Field(row, "Text", false)?.AsString();
         var token = DispatchJournal.Fingerprint(LiveTools.JsonText(new { session = LiveTools.SessionId, epoch = LiveTools.CurrentEpoch,
             id, records, payload = NativeValueFingerprint.Compute(payload), disabled, requiresConfirmation }));
-        return new Prepared(id, DispatchJournal.Fingerprint(records), TypedValue.CreateCopyFrom(payload), label, disabled, requiresConfirmation, token);
+        return new Prepared(id, LiveTools.GetReference(action), DispatchJournal.Fingerprint(records), TypedValue.CreateCopyFrom(payload), label, disabled, requiresConfirmation, token);
     }
     public static object Preview(string offered, string action, string items, string entry)
     {
@@ -73,7 +73,13 @@ public static class MedicalCommands
         if (p.Disabled) throw new InvalidOperationException("Game disabled this medical action.");
         if (p.Confirmation) throw new InvalidOperationException("This medical choice requires a separate confirmation business protocol that is not yet implemented.");
         return ActionCommands.DispatchDomain(id, "medical_report_request", p.Target, p.Token,
-            () => GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, null, p.Payload),
+            () =>
+            {
+                if (p.ActionRef != null)
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, p.Payload, true, null, null);
+                else
+                    GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, null, p.Payload);
+            },
             null, null, "medical_report_request_dispatch");
     }
 }

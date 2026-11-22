@@ -86,7 +86,7 @@ public static class SquadAdministration
         if (origin.Identity != LiveTools.GetReference("human").GetPersistentIdentity()) throw new ArgumentException("Use the active manager's actual team.");
         return LiveTools.GetReference(team);
     }
-    private sealed record Pick(TypedValue Data, string Target, string Label, string Token, uint EventId);
+    private sealed record Pick(TypedValue Data, string Target, string Label, string Token, uint EventId, uint ActionId, InteropReference ActionRef);
     private static Pick Captain(string team, string offered, string action, string items, string indices)
     {
         var target = Team(team); var available = Channel(offered, "game", "Actions");
@@ -126,7 +126,7 @@ public static class SquadAdministration
         if (data == null || data.IsNull) throw new ArgumentException("Captain candidate has no native payload.");
         var token = DispatchJournal.Fingerprint(LiveTools.JsonText(new { sessionId = LiveTools.SessionId, epoch = LiveTools.CurrentEpoch,
             team = target.GetPersistentIdentity(), action = id, records, payload = NativeValueFingerprint.Compute(data) }));
-        return new Pick(data, target.GetPersistentIdentity(), NegotiationActions.Field(row, "Text", false)?.AsString(), token, eventId);
+        return new Pick(data, target.GetPersistentIdentity(), NegotiationActions.Field(row, "Text", false)?.AsString(), token, eventId, id, LiveTools.GetReference(action));
     }
     public static object PreviewCaptain(string team, string offered, string action, string items, string entry)
     {
@@ -140,7 +140,13 @@ public static class SquadAdministration
         InteropReference teamRef = null;
         try { teamRef = LiveTools.GetReference(team); } catch { /* 容错保留 null */ }
         return ActionCommands.DispatchDomain(id, "select_team_captain", pick.Target, token,
-            () => SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent(pick.EventId, teamRef, TypedValue.CreateCopyFrom(pick.Data)), null, null, "captain_action_dispatch_only");
+            () =>
+            {
+                if (pick.ActionRef != null)
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.Game.ActionID)pick.ActionId, pick.EventId, pick.ActionRef, TypedValue.CreateCopyFrom(pick.Data), true, null, null);
+                else
+                    SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent(pick.EventId, teamRef, TypedValue.CreateCopyFrom(pick.Data));
+            }, null, null, "captain_action_dispatch_only");
     }
     private sealed record Numbers(InteropReference Target, uint Event, string Token);
     private static Numbers NumberAction(string operation, string team, string session, string players, string allowed)

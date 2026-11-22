@@ -43,7 +43,7 @@ public static class PlayerAvailabilityCommands
                 offered = pair.Value?.DataType?.FullName != "System.Boolean" || pair.Value.AsString() != "False" });
         return new { ok = true, targetIdentity = target, actions = rows, liveVerified = false };
     }
-    private static (string Target, uint Action, TypedValue Payload, string Label, bool Confirmation, string Token) Prepare(
+    private static (string Target, uint Action, InteropReference ActionRef, TypedValue Payload, string Label, bool Confirmation, string Token) Prepare(
         string source, string path, string club, string playerClub, string offered, string action, string items, string entry)
     {
         var target = Subject(source, path, club, playerClub, offered);
@@ -78,7 +78,7 @@ public static class PlayerAvailabilityCommands
         var label = NegotiationActions.Field(row, "Text", false)?.AsString();
         var token = DispatchJournal.Fingerprint(LiveTools.JsonText(new { sessionId = LiveTools.SessionId, epoch = LiveTools.CurrentEpoch,
             target, action = id, records, payload = NativeValueFingerprint.Compute(payload), label }));
-        return (target, id, TypedValue.CreateCopyFrom(payload), label, confirmation != null && !confirmation.IsNull, token);
+        return (target, id, LiveTools.GetReference(action), TypedValue.CreateCopyFrom(payload), label, confirmation != null && !confirmation.IsNull, token);
     }
     public static object Preview(string source, string path, string club, string playerClub, string offered, string action, string items, string entry)
     {
@@ -91,8 +91,16 @@ public static class PlayerAvailabilityCommands
         var p = Prepare(source, path, club, playerClub, offered, action, items, entry);
         if (p.Token != token) throw new InvalidOperationException("Player action or legal menu payload changed; preview again.");
         if (p.Confirmation && !acceptConfirmation) throw new InvalidOperationException("Read the native confirmation and explicitly acknowledge it.");
+        InteropReference playerRef = null;
+        try { playerRef = LiveTools.GetReference(source, path); } catch { /* 容错保留 null */ }
         return ActionCommands.DispatchDomain(id, "player_availability_action", p.Target, token,
-            () => SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, null, p.Payload),
+            () =>
+            {
+                if (p.ActionRef != null)
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.Game.ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, p.Payload, !p.Confirmation, null, null);
+                else
+                    SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, playerRef, p.Payload);
+            },
             null, null, "player_availability_dispatch_only");
     }
 }
