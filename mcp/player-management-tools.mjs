@@ -46,8 +46,15 @@ export function createPlayerManagementTools(call) {
       if (!execute) return preview;
       if (!args.expectedChoiceToken || preview.choiceToken !== args.expectedChoiceToken) throw new Error("管理菜单/人员状态已变化，提供原预览token。");
       if (preview.disabled || !preview.silentExecutionImplemented) throw new Error("游戏禁用此选择，或该确认流程尚未接入。");
-      const confirmed = args.acceptConfirmation !== false;
-      if (preview.requiresConfirmation && !confirmed) throw new Error("操作需要确认（已显式取消）。");
+      // 高危不可逆动作（互相解约/自由解约/撤回报价/终止租借）保留显式二次确认门槛；日常可逆管理动作默认确认
+      const highRiskActionIds = new Set(["1214855239", "1917875764"]);
+      const isHighRisk = highRiskActionIds.has(String(preview.actionId || "")) || /解约|释放|撤回|终止租借|Termination|Release|Withdraw|Recall/i.test(preview.label || "");
+      const confirmed = isHighRisk ? (args.acceptConfirmation === true) : (args.acceptConfirmation !== false);
+      if (preview.requiresConfirmation && !confirmed) {
+        throw new Error(isHighRisk
+          ? "高危不可逆操作（解约/撤回/终止租借），请先向用户确认后再显式传入 acceptConfirmation: true。"
+          : "操作需要确认（已显式取消）。");
+      }
       const id = args.operationId;
       try { return await scope.api("/api/v1/player-management/execute", { ...query, id, choiceToken: preview.choiceToken, acceptConfirmation: confirmed }, true); }
       catch (error) { return { ok: false, operationId: id, status: "transport_result_unknown", retrySafe: false, verified: false, error: String(error.message || error) }; }

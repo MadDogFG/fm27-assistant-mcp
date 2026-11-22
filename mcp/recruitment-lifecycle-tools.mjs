@@ -26,7 +26,9 @@ export function createRecruitmentLifecycleTools(call) {
       if (!args.expectedChoiceToken) throw new Error("先预览已有招募重点的生命周期操作并提供原token。");
       return context(args, async (scope, query, preview) => {
         if (preview.choiceToken !== args.expectedChoiceToken) throw new Error("重点身份或状态已变化，请重新预览。");
-        const confirmed = args.acceptConfirmation !== false;
+        // 删除重点不可逆，保留确认门槛；结束/重启可逆操作默认直接确认
+        const isDelete = args.action === "delete";
+        const confirmed = isDelete ? (args.acceptConfirmation === true) : (args.acceptConfirmation !== false);
         if (preview.requiresConfirmation && !confirmed) throw new Error(preview.confirmation);
         return { ...await scope.api("/api/v1/recruitment/lifecycle-execute", { ...query, id: args.operationId || randomUUID(),
           choiceToken: preview.choiceToken, acceptConfirmation: confirmed }, true), liveVerified: false };
