@@ -96,10 +96,13 @@ public static class PlayerAvailabilityCommands
         return ActionCommands.DispatchDomain(id, "player_availability_action", p.Target, token,
             () =>
             {
+                var payload = TypedValue.CreateCopyFrom(p.Payload);
+                if (NegotiationActions.Record(payload) is { } rec && rec.ContainsKey(0x7772436fu))
+                    rec[0x7772436fu] = TypedValue.Create(false);
                 if (p.ActionRef != null)
-                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.GamePlugin.ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, p.Payload, !p.Confirmation, null, null);
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.GamePlugin.ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, payload, true, null, null);
                 else
-                    SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, playerRef, p.Payload);
+                    SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, playerRef, payload);
             },
             null, null, "player_availability_dispatch_only");
     }

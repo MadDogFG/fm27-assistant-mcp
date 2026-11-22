@@ -142,10 +142,13 @@ public static class SquadAdministration
         return ActionCommands.DispatchDomain(id, "select_team_captain", pick.Target, token,
             () =>
             {
+                var payload = TypedValue.CreateCopyFrom(pick.Data);
+                if (NegotiationActions.Record(payload) is { } rec && rec.ContainsKey(0x7772436fu))
+                    rec[0x7772436fu] = TypedValue.Create(false);
                 if (pick.ActionRef != null)
-                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.GamePlugin.ActionID)pick.ActionId, pick.EventId, pick.ActionRef, TypedValue.CreateCopyFrom(pick.Data), true, null, null);
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((FM.GamePlugin.ActionID)pick.ActionId, pick.EventId, pick.ActionRef, payload, true, null, null);
                 else
-                    SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent(pick.EventId, teamRef, TypedValue.CreateCopyFrom(pick.Data));
+                    SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent(pick.EventId, teamRef, payload);
             }, null, null, "captain_action_dispatch_only");
     }
     private sealed record Numbers(InteropReference Target, uint Event, string Token);

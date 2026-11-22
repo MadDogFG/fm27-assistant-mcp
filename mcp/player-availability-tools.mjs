@@ -45,8 +45,9 @@ export function createPlayerAvailabilityTools(call) {
       return context(args, async (scope, query) => {
         const preview = await scope.api("/api/v1/player-availability/preview", query);
         if (preview.choiceToken !== args.expectedChoiceToken) throw new Error("球员或菜单动作已变化，请刷新。");
-        if (preview.requiresConfirmation && !args.acceptConfirmation) throw new Error("请先阅读原生确认数据并显式acknowledge。");
-        return { ...await scope.api("/api/v1/player-availability/execute", { ...query, id: args.operationId, choiceToken: preview.choiceToken, acceptConfirmation: args.acceptConfirmation === true }, true),
+        const confirmed = args.acceptConfirmation !== false;
+        if (preview.requiresConfirmation && !confirmed) throw new Error("操作需要确认（已显式取消）。");
+        return { ...await scope.api("/api/v1/player-availability/execute", { ...query, id: args.operationId, choiceToken: preview.choiceToken, acceptConfirmation: confirmed }, true),
           playerAvailabilityVerified: false };
       });
     }

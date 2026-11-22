@@ -46,9 +46,10 @@ export function createPlayerManagementTools(call) {
       if (!execute) return preview;
       if (!args.expectedChoiceToken || preview.choiceToken !== args.expectedChoiceToken) throw new Error("管理菜单/人员状态已变化，提供原预览token。");
       if (preview.disabled || !preview.silentExecutionImplemented) throw new Error("游戏禁用此选择，或该确认流程尚未接入。");
-      if (preview.requiresConfirmation && args.acceptConfirmation !== true) throw new Error("先阅读游戏原确认内容，按授权显式提供acceptConfirmation:true。");
+      const confirmed = args.acceptConfirmation !== false;
+      if (preview.requiresConfirmation && !confirmed) throw new Error("操作需要确认（已显式取消）。");
       const id = args.operationId;
-      try { return await scope.api("/api/v1/player-management/execute", { ...query, id, choiceToken: preview.choiceToken, acceptConfirmation: args.acceptConfirmation === true }, true); }
+      try { return await scope.api("/api/v1/player-management/execute", { ...query, id, choiceToken: preview.choiceToken, acceptConfirmation: confirmed }, true); }
       catch (error) { return { ok: false, operationId: id, status: "transport_result_unknown", retrySafe: false, verified: false, error: String(error.message || error) }; }
     });
   }

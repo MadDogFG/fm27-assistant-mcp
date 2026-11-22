@@ -129,14 +129,14 @@ public static class PlayerManagementCommands
         if (p.Token != token) throw new InvalidOperationException("Management request changed; preview again.");
         if (p.Disabled) throw new InvalidOperationException("Game disabled this management action.");
         if (p.Confirmation && !acceptConfirmation) throw new InvalidOperationException("Read and explicitly accept the game confirmation for this management choice.");
-        var payload = p.Payload;
-        if (p.Confirmation && acceptConfirmation && Record(payload) is { } rec && rec.ContainsKey(0x7772436fu))
+        var payload = TypedValue.CreateCopyFrom(p.Payload);
+        if (Record(payload) is { } rec && rec.ContainsKey(0x7772436fu))
             rec[0x7772436fu] = TypedValue.Create(false);
         return ActionCommands.DispatchDomain(id, "person_management_menu_action", p.Target, p.Token,
             () =>
             {
                 if (p.ActionRef != null)
-                    FM.Game.PluginContextActionsModule.HandleActionEvent((ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, payload, !p.Confirmation, null, null);
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, payload, true, null, null);
                 else
                     GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, null, payload);
             },

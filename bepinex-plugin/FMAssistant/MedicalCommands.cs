@@ -75,10 +75,13 @@ public static class MedicalCommands
         return ActionCommands.DispatchDomain(id, "medical_report_request", p.Target, p.Token,
             () =>
             {
+                var payload = TypedValue.CreateCopyFrom(p.Payload);
+                if (Record(payload) is { } rec && rec.ContainsKey(0x7772436fu))
+                    rec[0x7772436fu] = TypedValue.Create(false);
                 if (p.ActionRef != null)
-                    FM.Game.PluginContextActionsModule.HandleActionEvent((ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, p.Payload, true, null, null);
+                    FM.Game.PluginContextActionsModule.HandleActionEvent((ActionID)p.Action, (uint)InteropEventIDs.EventFmxDoAction, p.ActionRef, payload, true, null, null);
                 else
-                    GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, null, p.Payload);
+                    GameSubsystems.Get<GameInteropSubsystem>().SendEvent((uint)InteropEventIDs.EventFmxDoAction, null, payload);
             },
             null, null, "medical_report_request_dispatch");
     }

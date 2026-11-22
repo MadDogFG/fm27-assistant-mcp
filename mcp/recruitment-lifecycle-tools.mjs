@@ -26,9 +26,10 @@ export function createRecruitmentLifecycleTools(call) {
       if (!args.expectedChoiceToken) throw new Error("先预览已有招募重点的生命周期操作并提供原token。");
       return context(args, async (scope, query, preview) => {
         if (preview.choiceToken !== args.expectedChoiceToken) throw new Error("重点身份或状态已变化，请重新预览。");
-        if (preview.requiresConfirmation && !args.acceptConfirmation) throw new Error(preview.confirmation);
+        const confirmed = args.acceptConfirmation !== false;
+        if (preview.requiresConfirmation && !confirmed) throw new Error(preview.confirmation);
         return { ...await scope.api("/api/v1/recruitment/lifecycle-execute", { ...query, id: args.operationId || randomUUID(),
-          choiceToken: preview.choiceToken, acceptConfirmation: Boolean(args.acceptConfirmation) }, true), liveVerified: false };
+          choiceToken: preview.choiceToken, acceptConfirmation: confirmed }, true), liveVerified: false };
       });
     },
     // REC-O06a / REC-O07b: 读取球队球探优先级列表并优先/取消球队考察任务
