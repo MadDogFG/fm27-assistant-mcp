@@ -1,6 +1,13 @@
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-export const clean = text => String(text ?? "").replace(/[\u200b-\u200d\ufeff]/g, "");
-export const scalar = value => value?.kind === "scalar" ? value.value : null;
+export const clean = text => String(text ?? "")
+  .replace(/[\u200b-\u200d\ufeff]/g, "")
+  .replace(/\u0001[^\u0002]*\u0002/g, "")
+  .replace(/\u0001/g, "")
+  .trim();
+export const scalar = value => {
+  if (value?.kind !== "scalar") return null;
+  return typeof value.value === "string" ? clean(value.value) : value.value;
+};
 
 export function createLiveClient(call) {
   async function api(route, args = {}, post = false) {
@@ -54,6 +61,12 @@ export function createLiveClient(call) {
     async function properties(source, filter = "") {
       return (await api("/api/v1/live/properties", { ...descriptor(source), filter })).properties;
     }
+    async function release(handle) {
+      if (!handle) return;
+      const idx = handles.lastIndexOf(handle);
+      if (idx >= 0) handles.splice(idx, 1);
+      try { await api("/api/v1/live/close", { handle }, true); } catch { /* ignore */ }
+    }
     async function subscribe(source, name, knownContexts = {}, timeoutMs = 7000) {
       const metadata = (await properties(source, name)).find(p => p.name.split(":")[0] === name);
       if (!metadata) throw new Error(`当前引用不提供 ${name}`);
@@ -76,8 +89,16 @@ export function createLiveClient(call) {
         }
         return res;
       } catch (error) {
+        await release(opened.handle);
         throw new Error(`${name}: ${error.message || error}`, { cause: error });
       }
+    }
+    async function readAndRelease(source, name, knownContexts = {}, timeoutMs = 1500) {
+      const sub = await subscribeOptional(source, name, knownContexts, timeoutMs);
+      const val = sub.handle ? (sub.read?.value ?? null) : null;
+      const unavail = sub.unavailable;
+      if (sub.handle) await release(sub.handle);
+      return { ok: !unavail, value: val, scalar: scalar(val), unavailable: unavail };
     }
     // Some panel/session bindings never become ready when the game has no such session. A short
     // timeout and early bail-out matters: repeatedly polling such a channel while holding a raw
@@ -109,7 +130,7 @@ export function createLiveClient(call) {
       const current = await subscribe(useMatch ? "match" : team.handle, "Tactic", contexts);
       return { team, tactic: current, match, contexts };
     }
-    try { return await action({ api, ready, finish, properties, subscribe, subscribeOptional, propertyId, tactic }); }
+    try { return await action({ api, ready, finish, properties, subscribe, subscribeOptional, release, readAndRelease, propertyId, tactic }); }
     finally {
       for (const handle of handles.reverse()) {
         try { await api("/api/v1/live/close", { handle }, true); } catch { /* session or connection ended */ }

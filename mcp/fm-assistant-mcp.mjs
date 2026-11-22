@@ -257,14 +257,12 @@ tools.push(
     inputSchema: { type: "object", properties: { inPossession: { type: "boolean", default: true }, formation: { type: "string" }, expectedFormation: { type: "string" }, operationId: { type: "string" } }, required: ["formation"], additionalProperties: false } }
 );
 
-const INSTRUCTIONS = `FM 助教通过游戏进程内命令和数据通道工作。禁止模拟键鼠、派发合成 UI 输入或抢占玩家页面。
-目标是执行玩家合法操作（战术、收件箱、报价和谈判），不能用直接修改余额、属性或归属代替操作。
-先 plugin_health。实时查询使用 live_properties → live_subscribe → live_read → live_unsubscribe。
-source=game 为游戏根；后续 source 使用订阅 handle，path 为列表下标或 record 属性 ID（以 / 分隔）。
-properties 返回游戏认可的属性和必要上下文；有上下文要求时不能盲发。只订阅需要的属性，关闭不用的订阅。
-read 的 awaiting_response 表示尚未返回，不能当作空数据。所有 live 调用在游戏主线程执行。
-旧接口 queued=true 仅代表排队，事件发出不等于游戏接受，更不等于状态已验证。只有重读权威状态才可报告操作成功。
-存档工具读取的是磁盘快照；live 工具使用当前游戏数据。游戏重载后重新获取引用和订阅。`;
+const INSTRUCTIONS = `FM27 Assistant 通过游戏进程内原生命令与数据通道工作。禁止模拟键鼠或直接改写存档/内存数值。
+本网关采用渐进式披露模式：
+1. 先调用 plugin_health 确认游戏与存档状态。
+2. 按需调用 fm_discover({ domain, query, detail }) 检索领域可用工具及参数 Schema。
+3. 使用 fm_call({ action, params }) 执行具体业务操作，写操作须先读状态、保留 token/expectedCurrent 与唯一 operationId，并在执行后重读状态核验。
+4. 常用日期推进可直接调用 fm_continue_game。`;
 
 const liveSchema = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 const sourceFields = { source: { type: "string", description: "game、human、singleton:类型名或当前会话订阅 handle" }, path: { type: "string", description: "record 属性 ID / 列表下标路径" } };
@@ -425,7 +423,8 @@ const gatewayTools = [
         domain: { type: "string", enum: ["all", ...Object.keys(DOMAIN_META)], description: "按业务领域筛选" },
         query: { type: "string", description: "按名称或中文描述关键词搜索" },
         detail: { type: "boolean", description: "是否返回完整参数 Schema（默认 false，极省上下文）" },
-        limit: { type: "integer", minimum: 1, maximum: 100, description: "最多返回条数（默认 40）" },
+        offset: { type: "integer", minimum: 0, description: "分页偏移（默认 0）" },
+        limit: { type: "integer", minimum: 1, maximum: 120, description: "最多返回条数（默认 80）" },
       },
       additionalProperties: false,
     },

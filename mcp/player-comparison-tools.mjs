@@ -1,9 +1,24 @@
 import { createLiveClient, clean, scalar } from "./live-client.mjs";
 
-// 多球员属性、体能、身价、薪资与生涯状态专用横向比较工具组（REC-R20）
+// 多球员属性、体能、身价、薪资与生涯状态专用横向比较工具组
 export function createPlayerComparisonTools(call) {
   const client = createLiveClient(call);
-  const stripTags = text => clean(text).replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").trim();
+
+  function extractPosList(val) {
+    if (!val) return null;
+    if (val.kind === "scalar") return clean(val.value) || null;
+    if (val.kind === "list" && Array.isArray(val.items) && val.items.length) {
+      const names = val.items
+        .map(it => {
+          if (it?.kind === "scalar") return clean(it.value);
+          const f = it?.fields || {};
+          return clean(f["0x71764a36"]?.value || f["0x5374726e"]?.value || f["0x6e616d65"]?.value || "");
+        })
+        .filter(Boolean);
+      return names.length ? names.join("/") : null;
+    }
+    return null;
+  }
 
   async function comparePlayers({ playerIndices = [0, 1] } = {}) {
     if (!Array.isArray(playerIndices) || playerIndices.length < 2 || playerIndices.length > 4) {
@@ -39,17 +54,19 @@ export function createPlayerComparisonTools(call) {
           throw new Error(`球员索引越界: ${idx} (一线队共 ${items.length} 人)`);
         }
         const pRef = { source: players.handle, path: String(idx) };
-        const pCtx = { ...baseCtx, Person: pRef };
+        const pCtx = { ...baseCtx, Person: pRef, InPossession: true };
         const fields = {};
         for (const name of propNames) {
-          const sub = await scope.subscribeOptional(pRef, name, pCtx, 700);
-          if (sub.handle) {
-            const val = sub.read?.value;
-            fields[name] = val?.kind === "scalar"
-              ? (val.type === "System.String" ? stripTags(val.value) : val.value)
-              : val;
-          } else {
-            fields[name] = null;
+          const r = await scope.readAndRelease(pRef, name, pCtx, 700);
+          fields[name] = r.ok ? (r.scalar ?? r.value) : null;
+        }
+        // PositionString 在部分上下文为空时，兜底从 ClubCoachReport -> ScoutedPositionList 读取
+        if (!fields.PositionString) {
+          const reportSub = await scope.subscribeOptional(pRef, "ClubCoachReport", pCtx, 700);
+          if (reportSub.handle) {
+            const sp = await scope.readAndRelease(reportSub.handle, "ScoutedPositionList", pCtx, 700);
+            fields.PositionString = extractPosList(sp.value);
+            await scope.release(reportSub.handle);
           }
         }
         return { index: idx, identity: items[idx]?.identity || null, ...fields };
@@ -57,7 +74,6 @@ export function createPlayerComparisonTools(call) {
       profiles.push(row);
     }
 
-    // 生成两两或多项数值差值比较矩阵（针对 Condition / Morale / Age / Wage / Value / AwardsCount）
     const numericKeys = ["Age", "Condition", "Morale", "MatchSharpness", "Height", "Weight", "AwardsCount"];
     const comparison = {};
     for (const key of numericKeys) {

@@ -144,13 +144,36 @@ export function createClubOverviewTools(call) {
       };
     }),
 
-    // SQU-R09: 更衣室层级、社交群体与凝聚力反馈
+    // SQU-R09: 更衣室层级、社交群体与凝聚力反馈（自动映射球员姓名）
     dynamics: () => withClubAndTeam(async (scope, _club, team, contexts) => {
       const values = await readProperties(scope, team.handle, [
         "HierarchyTeamLeadersCount", "HierarchyHighlyInfluentialCount",
         "HierarchyInfluentialCount", "SocialGroupFeedbackString",
-        "MatchCohesionFeedback", "SocialGroupList", "HierarchyTeamLeaders"
+        "MatchCohesionFeedback", "SocialGroupList",
+        "HierarchyTeamLeaders", "HierarchyHighlyInfluential"
       ], contexts);
+
+      // 建立一线队 identity -> 姓名 映射，避免仅返回晦涩的 identity 字符串
+      const nameByIdentity = new Map();
+      const playersSub = await scope.subscribeOptional(team.handle, "Players", contexts, 1500);
+      const pItems = playersSub.read?.value?.items || [];
+      for (let i = 0; i < pItems.length; i++) {
+        const id = pItems[i]?.identity;
+        if (!id) continue;
+        const pRef = { source: playersSub.handle, path: String(i) };
+        const nr = await scope.readAndRelease(pRef, "Name", { ...contexts, Person: pRef }, 500);
+        if (nr.scalar) nameByIdentity.set(id, nr.scalar);
+      }
+      if (playersSub.handle) await scope.release(playersSub.handle);
+
+      const enrichList = listVal => {
+        if (!listVal || listVal.kind !== "list" || !Array.isArray(listVal.items)) return listVal;
+        return listVal.items.map(it => ({
+          identity: it?.identity ?? null,
+          name: it?.identity ? (nameByIdentity.get(it.identity) || null) : null
+        }));
+      };
+
       return {
         ok: true,
         teamIdentity: team.read.value?.identity ?? null,
@@ -158,11 +181,12 @@ export function createClubOverviewTools(call) {
           teamLeadersCount: scalar(values.HierarchyTeamLeadersCount),
           highlyInfluentialCount: scalar(values.HierarchyHighlyInfluentialCount),
           influentialCount: scalar(values.HierarchyInfluentialCount),
-          teamLeaders: values.HierarchyTeamLeaders
+          teamLeaders: enrichList(values.HierarchyTeamLeaders),
+          highlyInfluential: enrichList(values.HierarchyHighlyInfluential)
         },
         socialGroups: values.SocialGroupList,
-        socialGroupFeedback: values.SocialGroupFeedbackString,
-        matchCohesionFeedback: values.MatchCohesionFeedback,
+        socialGroupFeedback: clean(scalar(values.SocialGroupFeedbackString)) || values.SocialGroupFeedbackString,
+        matchCohesionFeedback: clean(scalar(values.MatchCohesionFeedback)) || values.MatchCohesionFeedback,
         liveVerified: true
       };
     })

@@ -8,8 +8,8 @@ export function createPlayerAndScoutingInsightsTools(call) {
     const out = {};
     for (const name of names) {
       try {
-        const sub = await scope.subscribeOptional(source, name, contexts, 1500);
-        out[name] = sub.handle ? (sub.read?.value ?? null) : { unavailable: sub.unavailable || "no_handle" };
+        const res = await scope.readAndRelease(source, name, contexts, 1200);
+        out[name] = res.ok ? (res.value ?? null) : { unavailable: res.unavailable || "no_handle" };
       } catch (error) {
         out[name] = { error: String(error.message || error) };
       }
@@ -17,8 +17,49 @@ export function createPlayerAndScoutingInsightsTools(call) {
     return out;
   }
 
+  function compactInsightsValue(val, key = "") {
+    if (val === null || val === undefined) return null;
+    if (typeof val !== "object") return val;
+    if (val.unavailable || val.error) return undefined;
+    if (val.kind === "scalar") return scalar(val);
+    const heavyListKeys = new Set([
+      "CareerStatsPerSeason", "CareerStatsPerSeasonLeagueOnly",
+      "ScoutedSquadComparisonPlayersShort", "ScoutedTransferInfo"
+    ]);
+    if (heavyListKeys.has(key) && val.kind === "list") {
+      return { count: val.count ?? (val.items?.length || 0), note: "紧凑模式已省略冗余嵌套列表，如需全量树请传 compact: false" };
+    }
+    if (val.kind === "list" && Array.isArray(val.items)) {
+      return val.items.slice(0, 12).map(it => {
+        if (it?.kind === "scalar") return scalar(it);
+        const f = it?.fields || {};
+        const picked = clean(f["0x71764a36"]?.value || f["0x5374726e"]?.value || f["0x6e616d65"]?.value || f["0x7469746c"]?.value || "");
+        return picked || it?.identity || "[item]";
+      });
+    }
+    if (val.kind === "record" && val.fields) {
+      const f = val.fields;
+      const str = clean(f["0x71764a36"]?.value || f["0x5374726e"]?.value || f["0x6e616d65"]?.value || "");
+      if (str) return str;
+    }
+    return val;
+  }
+
+  function shrinkInsights(obj) {
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === "FullContractDetails" || k === "PlayerReportDetails") {
+        if (v && typeof v === "object") out[k] = shrinkInsights(v);
+        continue;
+      }
+      const c = compactInsightsValue(v, k);
+      if (c !== undefined && c !== null && c !== "") out[k] = c;
+    }
+    return out;
+  }
+
   // SQU-R14 / SQU-R15 / SQU-R16 / REC-R02 / REC-R03: 指定一线队球员的生涯履历、约定与实际出场时间、预备队可用性及教练/球探报告
-  async function playerCareerAndPlayingTime({ playerIndex = 0 } = {}) {
+  async function playerCareerAndPlayingTime({ playerIndex = 0, compact = true } = {}) {
     return client.scope(async scope => {
       const club = await scope.subscribe("human", "Club");
       const team = await scope.subscribe("human", "Team");
@@ -133,11 +174,12 @@ export function createPlayerAndScoutingInsightsTools(call) {
       return {
         ok: true,
         readOnly: true,
+        compact: Boolean(compact),
         playerIndex,
         squadCount: items.length,
         playerName: clean(scalar(nameSub.read?.value)) || null,
         playerIdentity: items[playerIndex]?.identity || null,
-        insights: data,
+        insights: compact ? shrinkInsights(data) : data,
       };
     });
   }

@@ -64,8 +64,15 @@ export function createWorldAndSquadTools(call) {
       const clubProps = await readProperties(scope, club.handle, [
         "PlayerExpiringContractsCount", "PlayersOutOnLoanCount", "PlayersTimeLeftOnContractsCounts"
       ], contexts);
+      const availCount = scalar(teamProps.AvailableFirstTeamPlayersCount);
+      const playersSub = await scope.subscribeOptional(team.handle, "Players", contexts, 1000);
+      const squadCount = playersSub.read?.value?.count ?? (playersSub.read?.value?.items?.length || 0);
+      if (playersSub.handle) await scope.release(playersSub.handle);
+
+      const suspiciousZero = (availCount === "0" || availCount === null) && squadCount > 0;
       return {
         ok: true,
+        degraded: availCount === null || suspiciousZero,
         teamIdentity: team.read.value?.identity ?? null,
         bans: {
           activeBansCount: scalar(teamProps.AllCompsActiveBansCount),
@@ -73,9 +80,11 @@ export function createWorldAndSquadTools(call) {
           activeBans: teamProps.AllCompsActiveBans
         },
         availability: {
-          availableFirstTeamCount: scalar(teamProps.AvailableFirstTeamPlayersCount),
+          availableFirstTeamCount: availCount,
+          squadTotalCount: squadCount,
           nextMatchEligibilityRule: clean(scalar(teamProps.NextMatchEligibilityRule)),
-          registrationCompliance: teamProps.SquadRegistrationRulesCompliance
+          registrationCompliance: teamProps.SquadRegistrationRulesCompliance,
+          ...(suspiciousZero ? { note: "AvailableFirstTeamPlayersCount 仅在赛前选人上下文更新，非比赛窗口常返回 0；实际阵容人数请参考 squadTotalCount 或调用 get_squad_snapshot。" } : {})
         },
         contractsSummary: {
           expiringCount: scalar(clubProps.PlayerExpiringContractsCount),

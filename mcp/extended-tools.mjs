@@ -43,6 +43,7 @@ import { createClubStateTools } from "./club-state-tools.mjs";
 import { createCaptaincyStandinTools } from "./captaincy-standin-tools.mjs";
 import { createCodeOfConductTools } from "./code-of-conduct-tools.mjs";
 import { createBudgetAdjustmentTools } from "./budget-adjustment-tools.mjs";
+import { createSquadSnapshotTools } from "./squad-snapshot-tools.mjs";
 import { createTeamSelectionTools } from "./team-selection-tools.mjs";
 import { createTacticSuggestionTools } from "./tactic-suggestion-tools.mjs";
 import { createTacticAnalysisTools } from "./tactic-analysis-tools.mjs";
@@ -125,6 +126,7 @@ export function createExtendedTools(call) {
   const seasonIntl = createSeasonAndInternationalTools(call);
   const compAwards = createCompetitionsAndAwardsTools(call);
   const playerComparison = createPlayerComparisonTools(call);
+  const squadSnapshot = createSquadSnapshotTools(call);
   const datahubTr = createDatahubAndTransferRoomTools(call);
   const squadPlanner = createSquadPlannerTools(call);
   const jobAdverts = createJobAdvertTools(call);
@@ -383,8 +385,8 @@ export function createExtendedTools(call) {
     ["get_squad_registration", "读取当前球队正常注册会话、候选与已选名单；可预览自动选择、清空、撤销或确认。附加上下文来自实际游戏metadata，默认原UI规则165。", registrationArgs, [], squad.getRegistration],
     ["change_squad_registration", "正常让助理自动选择、清空、撤销或确认注册名单，保留游戏注册规则及CanConfirmChanges等门槛。派发不等于注册被引擎接受，尚不支持逐人勾选。", registrationArgs, ["operation", "expectedChoiceToken", "operationId"], squad.changeRegistration],
     ["get_board_request_options", "从当前经理俱乐部的原生BoardRequestSpeakTo菜单读取真实董事会请求；optionPath后预览原动作、确认内容和token，不打开董事会页面。", boardArgs, [], board.get],
-    ["get_club_panel_state", "按实时属性名读取俱乐部/球队/战术面板数据（root=club|team|tactic）；例如 Stadium、FinanceStadium、FanHappiness、ClubReputation、CoachingStaffRoles。属性名由调用方提供，不写死存档内容。", { root: { type: "string", enum: ["club", "team", "tactic"], default: "club" }, properties: { type: "array", items: text } }, ["properties"], clubState.get],
-    ["get_panel_state", "按实时属性名读取 招募/经理中心/阵容 面板（root=human|club|team|training|tactic，或直接传 handle）；例如 HumanShortlists、HumanJobCentreCurrentAdverts、SquadPlanner、TransferRoomOfferedPlayers、CoachingVacancies、ScoutingKnowledgeList。属性名由调用方提供，不写死存档内容。", { root: { type: "string", enum: ["human", "club", "team", "training", "tactic"], default: "human" }, handle: text, properties: { type: "array", items: text }, contexts: { type: "object", additionalProperties: true } }, ["properties"], panelState.get],
+    ["get_club_panel_state", "通用低层属性面板读取器（root=club|team|tactic）；常规查询建议优先使用 get_club_overview、get_club_confidence_and_culture、get_squad_dynamics_and_hierarchy 等聚合预设工具，无需手动猜测属性名。", { root: { type: "string", enum: ["club", "team", "tactic"], default: "club" }, properties: { type: "array", items: text } }, ["properties"], clubState.get],
+    ["get_panel_state", "通用低层属性面板读取器（root=human|club|team|training|tactic）；常规查询建议优先使用各领域专用聚合工具，避免手动猜测原生属性与上下文。", { root: { type: "string", enum: ["human", "club", "team", "training", "tactic"], default: "human" }, handle: text, properties: { type: "array", items: text }, contexts: { type: "object", additionalProperties: true } }, ["properties"], panelState.get],
     ["submit_board_request", "提交游戏当前提供的董事会请求原始业务动作，不能拼事件/请求数值。需要原token，确认时显式acceptConfirmation；仅派发，不宣称董事会已同意或建设等结果完成。", boardArgs, ["optionPath", "expectedChoiceToken", "operationId"], board.execute],
     ["get_transfer_clause_dates", "读取实际报价条款的开始/结束日期和游戏允许的最早/最晚边界；提供dateSource原生日期值后预览，不拼packed日期。", transferDateArgs, ["source", "kind", "collection", "clausePath"], proposal.dateGet],
     ["change_transfer_clause_date", "按游戏正常日期业务事件修改报价条款的开始或结束日期，使用真实GameDate及原token，检查合法边界。仅草稿，不提交或强制转会。", transferDateArgs, ["source", "kind", "collection", "clausePath", "dateSource", "expectedChoiceToken", "operationId"], proposal.dateExecute],
@@ -496,7 +498,8 @@ export function createExtendedTools(call) {
     ["get_match_passing_network", "只读读取直播比赛双方传球分布与传球网络节点起止坐标（MAT-R19/R21）。", {}, [], matchAnalytics.passingNetwork],
     ["get_match_player_live_stats", "只读读取直播比赛双方场上球员评分、进球助攻、红黄牌、xG/npXG/xA、短中长传次数与成功率、关键传球、机会创造、防守动作与跑动数据（MAT-R13/R14/R19/R25/R26）。", { side: { type: "string", enum: ["home", "away", "both"], default: "home" }, limit: { type: "integer", minimum: 1, maximum: 25, default: 15 } }, [], matchAnalytics.playerLiveStats],
     ["get_match_player_heatmap", "只读读取直播比赛指定球员的热区图数据（MAT-R22）。", { side: { type: "string", enum: ["home", "away"], default: "home" }, playerIndex: { type: "integer", minimum: 0, maximum: 25, default: 0 } }, [], matchAnalytics.playerHeatMap],
-    ["get_player_career_playing_time_and_reserves", "只读读取一线队指定球员的生涯履历、赛季数据、奖项、约定与实际出场时间、预备队出场授权及球探/教练优缺点报告（SQU-R14/R15/R16/REC-R02/R03）。", { playerIndex: { type: "integer", minimum: 0, maximum: 60, default: 0 } }, [], playerScouting.playerCareerAndPlayingTime],
+    ["get_squad_snapshot", "一行一人紧凑阵容快照：一次读取全队（或分页）球员姓名、球衣号、年龄、位置、体能、锐度、士气、星级、薪资、合同到期与出场承诺，20人体积小于5KB且绝不触发订阅上限。", { offset: { type: "integer", minimum: 0, default: 0 }, limit: { type: "integer", minimum: 1, maximum: 50, default: 30 }, includeContractAndStars: { type: "boolean", default: true } }, [], squadSnapshot.getSquadSnapshot],
+    ["get_player_career_playing_time_and_reserves", "只读读取一线队指定球员的生涯履历、约定与实际出场时间、预备队出场授权及球探/教练优缺点报告（默认 compact=true 紧凑模式，如需原始全量嵌套树请传 compact: false）。", { playerIndex: { type: "integer", minimum: 0, maximum: 60, default: 0 }, compact: { type: "boolean", default: true } }, [], playerScouting.playerCareerAndPlayingTime],
     ["get_scouting_knowledge_and_reports", "只读读取球探知识覆盖、已侦察球员数、短名单合约统计、球探空缺与已侦察球队报告（REC-R01/R03/CLB-R10）。", {}, [], playerScouting.scoutingKnowledgeAndReports],
     ["list_shortlists", "只读读取全部球员短名单及人数统计（REC-R06）。", {}, [], shortlists.listShortlists],
     ["create_shortlist", "静默新建球员短名单并独立读回校验列表增加（REC-O09a）。", { name: text, operationId: text }, ["name"], shortlists.createShortlist],

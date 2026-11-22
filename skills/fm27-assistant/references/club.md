@@ -11,5 +11,6 @@
 - **附属俱乐部（Affiliates）**：查看现有附属关系，提议寻找新附属俱乐部或取消现有关联。
 
 ## 注意事项
+- 查询俱乐部综合信息、文化期待、财政预算或团队层级时，**优先使用开箱即用的聚合工具**（如 `get_club_overview`、`get_club_confidence_and_culture`、`get_club_vision`、`get_budget_adjustment`），避免使用底层泛用面板工具（`get_club_panel_state`）手动猜测属性名。
 - 预算调整受限于当前转会窗口锁定状态与董事会限制，执行前请先读取 `preview-budget-confirm` 确认可调区间。
 - 解约职员或发起大型设施请求前，注意评估俱乐部当前资金余额与违约金提示。

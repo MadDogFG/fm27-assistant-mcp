@@ -1,0 +1,128 @@
+import { createLiveClient, clean, scalar } from "./live-client.mjs";
+
+// 一行一人紧凑阵容快照（get_squad_snapshot）：解决全队概览需反复逐个调用且易撞 128 订阅上限的问题
+export function createSquadSnapshotTools(call) {
+  const client = createLiveClient(call);
+
+  function extractPositionText(val) {
+    if (!val) return null;
+    if (val.kind === "scalar") return clean(val.value) || null;
+    if (val.kind === "list" && Array.isArray(val.items) && val.items.length) {
+      const names = val.items
+        .map(it => {
+          if (it?.kind === "scalar") return clean(it.value);
+          const f = it?.fields || {};
+          return clean(f["0x71764a36"]?.value || f["0x5374726e"]?.value || f["0x6e616d65"]?.value || "");
+        })
+        .filter(Boolean);
+      return names.length ? names.join("/") : null;
+    }
+    return null;
+  }
+
+  async function getSquadSnapshot({ offset = 0, limit = 30, includeContractAndStars = true } = {}) {
+    const start = Math.max(0, Number(offset) || 0);
+    const maxCount = Math.max(1, Math.min(50, Number(limit) || 30));
+
+    return client.scope(async scope => {
+      const human = { source: "human" };
+      const team = await scope.subscribe("human", "Team", { human, Human: human });
+      const baseCtx = { human, Human: human, team: { source: team.handle }, Team: { source: team.handle } };
+      const playersSub = await scope.subscribeOptional({ source: team.handle }, "Players", baseCtx, 2000);
+      const allItems = playersSub.read?.value?.items || [];
+      const total = playersSub.read?.value?.count ?? allItems.length;
+
+      if (!playersSub.handle || total === 0) {
+        return {
+          ok: true,
+          readOnly: true,
+          degraded: !playersSub.handle,
+          total: 0,
+          returned: 0,
+          players: [],
+          note: playersSub.handle ? "当前球队名单为空。" : `未能获取球队名单句柄（${playersSub.unavailable || "no_handle"}）`
+        };
+      }
+
+      const end = Math.min(total, start + maxCount);
+      const rows = [];
+      let degradedFields = 0;
+
+      for (let i = start; i < end; i++) {
+        const pRef = { source: playersSub.handle, path: String(i) };
+        const pCtx = { ...baseCtx, Person: pRef, InPossession: true };
+
+        const nameR = await scope.readAndRelease(pRef, "Name", pCtx, 700);
+        const numR = await scope.readAndRelease(pRef, "SquadNumber", pCtx, 500);
+        const ageR = await scope.readAndRelease(pRef, "Age", pCtx, 500);
+        const posR = await scope.readAndRelease(pRef, "PositionString", pCtx, 500);
+        const condR = await scope.readAndRelease(pRef, "Condition", pCtx, 500);
+        const sharpR = await scope.readAndRelease(pRef, "MatchSharpness", pCtx, 500);
+        const moraleR = await scope.readAndRelease(pRef, "Morale", pCtx, 500);
+
+        let position = posR.scalar || null;
+        let caStars = null;
+        let paStars = null;
+        let contractExpires = null;
+        let playingTime = null;
+        let wage = null;
+
+        if (includeContractAndStars || !position) {
+          const reportSub = await scope.subscribeOptional(pRef, "ClubCoachReport", pCtx, 700);
+          if (reportSub.handle) {
+            if (!position) {
+              const sp = await scope.readAndRelease(reportSub.handle, "ScoutedPositionList", pCtx, 600);
+              position = extractPositionText(sp.value);
+            }
+            if (includeContractAndStars) {
+              const caR = await scope.readAndRelease(reportSub.handle, "CurrentAbilityStars", pCtx, 500);
+              const paR = await scope.readAndRelease(reportSub.handle, "PotentialAbilityStars", pCtx, 500);
+              caStars = caR.scalar;
+              paStars = paR.scalar;
+            }
+            await scope.release(reportSub.handle);
+          }
+        }
+
+        if (includeContractAndStars) {
+          const wageR = await scope.readAndRelease(pRef, "Wage", pCtx, 500);
+          wage = wageR.scalar;
+          const fcSub = await scope.subscribeOptional(pRef, "FullContract", pCtx, 600);
+          if (fcSub.handle) {
+            const expR = await scope.readAndRelease(fcSub.handle, "EndDateDescription", pCtx, 500);
+            const ptR = await scope.readAndRelease(fcSub.handle, "AgreedPlayingTimeDescription", pCtx, 500);
+            contractExpires = expR.scalar;
+            playingTime = ptR.scalar;
+            await scope.release(fcSub.handle);
+          }
+        }
+
+        if (!nameR.ok) degradedFields++;
+        rows.push({
+          index: i,
+          name: nameR.scalar || `#${i}`,
+          number: numR.scalar,
+          age: ageR.scalar,
+          position,
+          condition: condR.scalar,
+          sharpness: sharpR.scalar,
+          morale: moraleR.scalar,
+          ...(includeContractAndStars ? { caStars, paStars, wage, contractExpires, playingTime } : {})
+        });
+      }
+
+      return {
+        ok: true,
+        readOnly: true,
+        total,
+        offset: start,
+        returned: rows.length,
+        truncated: end < total,
+        degraded: degradedFields > 0,
+        players: rows
+      };
+    });
+  }
+
+  return { getSquadSnapshot };
+}

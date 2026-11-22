@@ -134,8 +134,9 @@ export function createNewsTools(call) {
         rows.push({ index, identity: original.identity, hasPromises: scalar(hasPromises.read.value) ?? null,
           linkedPromiseCount: linked.read.value?.kind === "list" ? linked.read.value.count : null });
       }
-      return { ok: true, teamIdentity: team.read.value?.identity, playerCount: Number(playerCount), total,
-        offset, nextOffset: end < total ? end : null, rows };
+      return { ok: true, status: "ok", degraded: false, teamIdentity: team.read.value?.identity, playerCount: Number(playerCount), total,
+        offset, nextOffset: end < total ? end : null, rows,
+        ...(total === 0 ? { note: "当前全队无任何不满事项（已成功读回原生列表）。" } : {}) };
     }),
     promises: ({ completed = false, offset = 0, limit = 10 } = {}) => client.scope(async scope => {
       if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 20)

@@ -46,10 +46,11 @@ export function classifyToolDomain(name) {
 /**
  * 执行按领域与关键词的渐进式发现
  */
-export function discoverTools(allTools, { domain = "all", query = "", detail = false, limit = 40 } = {}) {
+export function discoverTools(allTools, { domain = "all", query = "", detail = false, offset = 0, limit = 80 } = {}) {
   const normalizedDomain = String(domain || "all").toLowerCase();
   const q = String(query || "").trim().toLowerCase();
-  const maxItems = Math.max(1, Math.min(100, Number(limit) || 40));
+  const start = Math.max(0, Number(offset) || 0);
+  const maxItems = Math.max(1, Math.min(120, Number(limit) || 80));
 
   const matched = allTools.filter(tool => {
     const toolDomain = classifyToolDomain(tool.name);
@@ -58,7 +59,7 @@ export function discoverTools(allTools, { domain = "all", query = "", detail = f
     return tool.name.toLowerCase().includes(q) || (tool.description || "").toLowerCase().includes(q);
   });
 
-  const sliced = matched.slice(0, maxItems).map(tool => {
+  const sliced = matched.slice(start, start + maxItems).map(tool => {
     const item = {
       name: tool.name,
       domain: classifyToolDomain(tool.name),
@@ -73,8 +74,9 @@ export function discoverTools(allTools, { domain = "all", query = "", detail = f
   return {
     ok: true,
     totalMatched: matched.length,
+    offset: start,
     returned: sliced.length,
-    truncated: matched.length > sliced.length,
+    truncated: start + sliced.length < matched.length,
     domains: normalizedDomain === "all" && !q ? DOMAIN_META : undefined,
     tools: sliced,
     tip: detail
