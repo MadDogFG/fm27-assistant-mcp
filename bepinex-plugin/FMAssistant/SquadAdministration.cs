@@ -137,8 +137,10 @@ public static class SquadAdministration
     {
         var pick = Captain(team, offered, action, items, entry);
         if (pick.Token != token) throw new InvalidOperationException("Captain candidate changed; preview again.");
+        InteropReference teamRef = null;
+        try { teamRef = LiveTools.GetReference(team); } catch { /* 容错保留 null */ }
         return ActionCommands.DispatchDomain(id, "select_team_captain", pick.Target, token,
-            () => SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent(pick.EventId, null, TypedValue.CreateCopyFrom(pick.Data)), null, null, "captain_action_dispatch_only");
+            () => SI.Core.GameSubsystems.Get<GameInteropSubsystem>().SendEvent(pick.EventId, teamRef, TypedValue.CreateCopyFrom(pick.Data)), null, null, "captain_action_dispatch_only");
     }
     private sealed record Numbers(InteropReference Target, uint Event, string Token);
     private static Numbers NumberAction(string operation, string team, string session, string players, string allowed)
