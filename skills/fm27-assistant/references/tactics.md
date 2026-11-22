@@ -14,3 +14,7 @@
 2. 修改前先调用对应的 `get_*` 工具获取当前值、合法候选与 `choiceToken`。
 3. 调用 `fm_call` 执行变更后，再次读取确认变更已生效。
 4. 定位球编辑会话（`set_set_piece_edit_session`）完成后记得确认保存或退出，避免锁定草稿。
+
+## 常见误区与避坑（必读）
+- **不要误以为需要切到游戏页面**：`set_team_instruction`、`set_player_instruction`、`get_set_piece_takers` / `change_set_piece_takers` 全部走后台数据通道，**无需玩家打开战术或定位球界面**；个人指令若报“被当前角色锁定”，是游戏角色本身的设计限制（如边翼卫锁死向前插上），跳过该组即可。
+- **定位球主罚必须传 `playerPaths`**：先不带 `action` 调 `get_set_piece_takers({ setPieceType })` 读取 `SetPieceTakerAddPlayerList` 候选下标；预览 `add-left` / `add-right` / `add-both` / `remove` / `move` 时**必须传 `playerPaths: ["0"]`**（不传会导致游戏因未选中任何球员而报 `CanAddToLeftFootTakers = False`），拿到 `choiceToken` 后再调 `change_set_piece_takers` 执行。

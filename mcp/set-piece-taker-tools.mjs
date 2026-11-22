@@ -33,6 +33,9 @@ export function createSetPieceTakerTools(call) {
     const candidates = await scope.subscribe(base.setpiece, "SetPieceTakerAddPlayerList", contexts);
     const paths = args.playerPaths || [];
     const add = ["add-left", "add-right", "add-both"].includes(args.action);
+    if (["add-left", "add-right", "add-both", "remove", "move", "penalty-add", "penalty-remove", "penalty-move"].includes(args.action) && !paths.length) {
+      throw new Error(`action="${args.action}" 必须传入 playerPaths（例如 ["0"]）；请先不带 action 调 get_set_piece_takers 读取候选下标，无需切到游戏定位球页面。`);
+    }
     const selection = add ? paths.map(path => {
       if (!/^(0|[1-9]\d*)$/.test(path)) throw new Error("从实际候选名单选择完整的球员行。");
       return { $value: { source: candidates.handle, path } };
