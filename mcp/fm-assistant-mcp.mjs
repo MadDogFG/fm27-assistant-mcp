@@ -683,8 +683,9 @@ async function handleMessage(message) {
         } else {
           // 自动先读取当前推进状态，若可推进则自动补齐 token 并执行，不可推进则明确返回阻塞原因
           const state = await callTool("get_continue_game_state", {});
-          if (!state?.canContinue || !state?.choiceToken) {
-            result = { ...state, autoContinueSkipped: true, note: "当前游戏未处于 CanContinue 状态，已返回真实阻塞原因（未强行推进）。" };
+          const allowed = state?.canRequest === true || state?.canContinue === true;
+          if (!allowed || !state?.choiceToken) {
+            result = { ...state, autoContinueSkipped: true, note: "当前游戏未处于可推进状态，已返回真实阻塞原因（未强行推进）。" };
           } else {
             result = await callTool("request_continue_game", {
               expectedGameIdentity: state.gameIdentity,

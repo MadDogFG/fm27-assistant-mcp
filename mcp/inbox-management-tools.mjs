@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createLiveClient } from "./live-client.mjs";
 
 export function createInboxManagementTools(call) {
@@ -10,9 +11,11 @@ export function createInboxManagementTools(call) {
       const query = { team: team.handle, unread: unread.handle };
       const preview = await scope.api("/api/v1/news/mark-all-read-preview", { ...query, operationId: execute ? undefined : args.operationId });
       if (!execute) return preview;
-      if (!args.operationId || !args.expectedChoiceToken || preview.choiceToken !== args.expectedChoiceToken)
-        throw new Error("需要原收件箱预览token和固定operationId，状态变化后请重新预览。");
-      return scope.api("/api/v1/news/mark-all-read", { ...query, id: args.operationId, choiceToken: args.expectedChoiceToken }, true);
+      if (args.expectedChoiceToken && preview.choiceToken !== args.expectedChoiceToken)
+        throw new Error("收件箱状态已变化，请重新预览。");
+      const token = args.expectedChoiceToken || preview.choiceToken;
+      const opId = args.operationId || randomUUID();
+      return scope.api("/api/v1/news/mark-all-read", { ...query, id: opId, choiceToken: token }, true);
     });
   }
   return { get: args => context(args, false), execute: args => context(args, true) };
