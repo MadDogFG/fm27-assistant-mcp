@@ -237,5 +237,74 @@ export function createPlayerAttributesTools(call) {
     });
   }
 
-  return { getPlayerAttributes, getLeagueTableAndFixtures };
+  /**
+   * 赛前一键简报（Token 优化聚合工具）：1 次调用汇总联赛名次、下场对手、本队体能/伤病预警与预算，单次 < 4KB
+   */
+  async function getPreMatchBriefing() {
+    return client.scope(async scope => {
+      const human = { source: "human" };
+      const team = await scope.subscribe("human", "Team", { human, Human: human });
+      const club = await scope.subscribeOptional("human", "Club", { human, Human: human }, 1200);
+      const ctx = {
+        human, Human: human,
+        team: { source: team.handle }, Team: { source: team.handle },
+        ...(club.handle ? { club: { source: club.handle }, Club: { source: club.handle } } : {})
+      };
+
+      const teamName = await scope.resolveRefName(team.handle, ctx, 500);
+      const posR = await scope.readAndRelease(team.handle, "LeaguePosition", ctx, 600);
+      const compSub = await scope.subscribeOptional(team.handle, "CurrentComp1", ctx, 1000);
+      const leagueName = compSub.handle ? await scope.resolveRefName(compSub.handle, ctx, 500) : null;
+
+      // 下场比赛信息
+      let nextOpponent = null, inDays = null;
+      const nfSub = await scope.subscribeOptional(team.handle, "Next5Fixtures", ctx, 1000);
+      if (nfSub.handle && nfSub.read?.value?.kind === "list" && nfSub.read.value.items?.length) {
+        const first = nfSub.read.value.items[0];
+        const fields = first?.fields || {};
+        inDays = clean(scalar(fields["0x71764a36"])) || null;
+        const oppKey = Object.keys(fields).find(k => fields[k]?.kind === "reference" && fields[k]?.type === "FM.UI.TeamReference");
+        if (oppKey) nextOpponent = await scope.resolveRefName({ source: nfSub.handle, path: `0/${oppKey}` }, ctx, 500).catch(() => null);
+        await scope.release(nfSub.handle);
+      }
+
+      // 扫描本队体能偏低(<80)、锐度偏低(<50)或士气偏低(<=11)的预警球员（不吐全量20人以极省 Token）
+      const alerts = [];
+      const playersSub = await scope.subscribeOptional(team.handle, "Players", ctx, 1500);
+      if (playersSub.handle && playersSub.read?.value?.kind === "list") {
+        const items = playersSub.read.value.items || [];
+        for (let i = 0; i < Math.min(items.length, 25); i++) {
+          const pRef = { source: playersSub.handle, path: String(i) };
+          const pCtx = { ...ctx, Person: pRef };
+          const cond = Number((await scope.readAndRelease(pRef, "Condition", pCtx, 400)).scalar ?? 100);
+          const morale = Number((await scope.readAndRelease(pRef, "Morale", pCtx, 400)).scalar ?? 15);
+          if (cond < 80 || morale <= 11) {
+            const name = (await scope.readAndRelease(pRef, "Name", pCtx, 400)).scalar || `#${i}`;
+            const pos = (await scope.readAndRelease(pRef, "BestPositionShortString", pCtx, 400)).scalar || null;
+            alerts.push({ squadIndex: i, name, position: pos, condition: cond, morale });
+          }
+        }
+        await scope.release(playersSub.handle);
+      }
+
+      const unreadR = await scope.readAndRelease("human", "NumberUnreadMessages", ctx, 500);
+      const tacticSub = await scope.subscribeOptional(team.handle, "Tactic", { ...ctx, Boolean: true }, 1000);
+      const mentalityR = tacticSub.handle ? await scope.readAndRelease(tacticSub.handle, "Mentality", ctx, 500) : null;
+
+      return {
+        ok: true,
+        readOnly: true,
+        teamName,
+        league: { name: leagueName, position: posR.scalar || null },
+        nextMatch: { opponentName: nextOpponent, inDays },
+        currentMentality: mentalityR?.scalar || null,
+        unreadMessages: unreadR.scalar || "0",
+        squadAlertsCount: alerts.length,
+        squadAlerts: alerts,
+        tip: "如需完整 20 人名单请调 get_squad_snapshot；需对手预计首发与针对性指令请调 get_opposition_instructions。"
+      };
+    });
+  }
+
+  return { getPlayerAttributes, getLeagueTableAndFixtures, getPreMatchBriefing };
 }

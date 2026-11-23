@@ -36,10 +36,10 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
   -> 调 `get_league_table_and_fixtures`。
 - **“看看球队士气、更衣室大佬是谁、有没有闹情绪的”**
   -> 调 `get_squad_dynamics_and_hierarchy` + `get_squad_happiness_issues`。
-- **“今天收件箱有啥事 / 帮我过一天”**
-  -> 调 `get_inbox`，普通通知可调 `mark_all_messages_read`，想过天调 `fm_continue_game({ action: "continue" })`。
 - **“下场打谁 / 对手有什么弱点 / 怎么调整战术”**
-  -> 调 `get_opposition_scout_report` 看对手报告，再查 `get_tactic_slots` 和 `get_lineup_options` 看当前阵型与首发。
+  -> 先调 `get_pre_match_briefing`（仅 ~500B 极省 Token，一次看全联赛名次、下场对手、当前心态、未读消息与体能/士气预警），再按需调 `get_opposition_scout_report` 与 `get_opposition_instructions`（含对手姓名与球衣号）。
+- **“今天收件箱有啥事 / 帮我过一天”**
+  -> 调 `get_inbox`，纯通知可直接一键调 `mark_all_messages_read({})`（无需先预览 token），想过天调 `fm_continue_game({ action: "continue" })`（若遇 `processing_card_timer_active` 等待 2 秒再读即可）。
 - **“俱乐部老板对我们有啥要求 / 还有多少钱买人”**
   -> 调 `get_club_history_and_overview` + `get_club_vision_draft` + `get_budget_allocation`（别去用 `get_club_panel_state` 盲猜属性名）。
 - **“刚踢完这场比赛踢得怎么样 / 赛中数据咋样”**

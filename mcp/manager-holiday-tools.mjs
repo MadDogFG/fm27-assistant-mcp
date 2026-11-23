@@ -123,6 +123,8 @@ export function createManagerHolidayTools(call) {
           updates.push({ propName, value: val, result: upd });
         }
       }
+      // 等待游戏主线程将 ReturnDateType 等设置真正应用到度假会话，再触发 EventFmxGoOnHoliday
+      if (updates.length) await new Promise(r => setTimeout(r, 300));
 
       const dispatch = await call(
         `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=EventFmxGoOnHoliday&source=${encodeURIComponent(before.goOnHolidayHandle)}&apply=true`,
