@@ -63,20 +63,49 @@ export function createOppositionReportTools(call) {
       const items = reportsSub.read?.value?.items || [];
       const count = Math.min(items.length, Math.max(1, Number(maxTeams) || 3));
       const scoutedTeams = [];
+      let nextOpponentRef = null;
       for (let i = 0; i < count; i++) {
         const oppRef = { source: reportsSub.handle, path: String(i) };
         const nameSub = await scope.subscribeOptional(oppRef, "Name", ctx, 1000);
         const visSub = await scope.subscribeOptional(oppRef, "OppositionReportVisuals", ctx, 1200);
         const formSub = await scope.subscribeOptional(oppRef, "PreferredFormationString", ctx, 1000);
         const isNextSub = await scope.subscribeOptional(oppRef, "IsContextTeamNextOpponent", ctx, 800);
+        const isNext = scalar(isNextSub.read?.value);
+        if (String(isNext).toLowerCase() === "true" && !nextOpponentRef) nextOpponentRef = oppRef;
         scoutedTeams.push({
           index: i,
           identity: items[i]?.identity || null,
           name: stripTags(scalar(nameSub.read?.value)) || null,
-          isNextOpponent: scalar(isNextSub.read?.value),
+          isNextOpponent: isNext,
           preferredFormation: stripTags(scalar(formSub.read?.value)) || null,
           visuals: visSub.handle ? decodeValue(visSub.read?.value, idMap) : { unavailable: visSub.unavailable || "no_handle" },
         });
+      }
+
+      // 若已侦察列表里未直接标出下一对手，回退从当前战术的 NextOppositionInstructionsTeam 获取下一对手引用
+      if (!nextOpponentRef) {
+        const tacticSub = await scope.subscribeOptional(team.handle, "Tactic", { ...ctx, Boolean: true }, 1000);
+        if (tacticSub.handle) {
+          const nextTeamSub = await scope.subscribeOptional(tacticSub.handle, "NextOppositionInstructionsTeam", ctx, 1000);
+          if (nextTeamSub.handle && nextTeamSub.read?.value?.kind === "reference") {
+            nextOpponentRef = { source: nextTeamSub.handle };
+          }
+        }
+      }
+
+      // 读取真正“下一对手”自身的优缺点与偏好阵型（避免把己方球队的 ScoutReportStrengths 当成对手）
+      let nextOpponentAnalysis = null;
+      if (nextOpponentRef) {
+        const oppName = await scope.readAndRelease(nextOpponentRef, "Name", ctx, 700);
+        const oppForm = await scope.readAndRelease(nextOpponentRef, "PreferredFormationString", ctx, 700);
+        const oppStr = await scope.subscribeOptional(nextOpponentRef, "ScoutReportStrengths", ctx, 1000);
+        const oppWeak = await scope.subscribeOptional(nextOpponentRef, "ScoutReportWeaknesses", ctx, 1000);
+        nextOpponentAnalysis = {
+          name: stripTags(oppName.scalar || "") || null,
+          preferredFormation: stripTags(oppForm.scalar || "") || null,
+          strengths: oppStr.handle ? decodeValue(oppStr.read?.value, idMap) : null,
+          weaknesses: oppWeak.handle ? decodeValue(oppWeak.read?.value, idMap) : null,
+        };
       }
 
       return {
@@ -94,8 +123,9 @@ export function createOppositionReportTools(call) {
         },
         report: {
           nextOppositionThreatAssessment: stripTags(scalar(threatSub.read?.value)) || null,
-          teamStrengths: strengthsSub.handle ? decodeValue(strengthsSub.read?.value, idMap) : { unavailable: strengthsSub.unavailable },
-          teamWeaknesses: weaknessesSub.handle ? decodeValue(weaknessesSub.read?.value, idMap) : { unavailable: weaknessesSub.unavailable },
+          nextOpponentAnalysis,
+          ownTeamStrengths: strengthsSub.handle ? decodeValue(strengthsSub.read?.value, idMap) : { unavailable: strengthsSub.unavailable },
+          ownTeamWeaknesses: weaknessesSub.handle ? decodeValue(weaknessesSub.read?.value, idMap) : { unavailable: weaknessesSub.unavailable },
           scoutedTeams,
         },
       };

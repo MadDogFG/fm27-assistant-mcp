@@ -45,6 +45,7 @@ import { createCodeOfConductTools } from "./code-of-conduct-tools.mjs";
 import { createBudgetAdjustmentTools } from "./budget-adjustment-tools.mjs";
 import { createSquadSnapshotTools } from "./squad-snapshot-tools.mjs";
 import { createLiveQueryTools } from "./live-query-tools.mjs";
+import { createPlayerAttributesTools } from "./player-attributes-tools.mjs";
 import { createTeamSelectionTools } from "./team-selection-tools.mjs";
 import { createTacticSuggestionTools } from "./tactic-suggestion-tools.mjs";
 import { createTacticAnalysisTools } from "./tactic-analysis-tools.mjs";
@@ -129,6 +130,7 @@ export function createExtendedTools(call) {
   const playerComparison = createPlayerComparisonTools(call);
   const squadSnapshot = createSquadSnapshotTools(call);
   const liveQuery = createLiveQueryTools(call);
+  const playerAttrs = createPlayerAttributesTools(call);
   const datahubTr = createDatahubAndTransferRoomTools(call);
   const squadPlanner = createSquadPlannerTools(call);
   const jobAdverts = createJobAdvertTools(call);
@@ -318,7 +320,7 @@ export function createExtendedTools(call) {
     ["request_set_piece_tactic_update", "按原 token 发送 SetPieceRequestTacticUpdate(1296390501)；派发不证明 routine 已更新。", setPieceRoutineArgs, ["expectedChoiceToken", "operationId"], setPieceRoutine.execute],
     ["get_full_advice_request", "预览请求完整 staff 建议集合（事件 1397301300，target=human，data=null）；只读。", staffAdviceArgs, [], staffAdvice.preview],
     ["request_full_advice_collection", "发送 RequestFullAdviceCollection(1397301300)；派发不证明建议已生成或显示。", staffAdviceArgs, ["expectedChoiceToken", "operationId"], staffAdvice.request],
-    ["get_tactic_analysis", "读取当前战术的原生评估（战术理解/球员能力/球员认同/下场比赛信息/整体效果/状态旗标/球员列表）与复杂度（整体/球队指令/球员指令/对手指令）；只读，字段名由属性注册表映射。", {}, [], tacticAnalysis.get],
+    ["get_tactic_analysis", "读取当前战术的原生评估（战术理解/球员能力/球员认同/下场比赛信息/整体效果/状态旗标/球员列表）与复杂度（默认 compact=true 精简输出防爆上下文，需全量树传 compact: false）；只读。", { compact: { type: "boolean", default: true } }, [], tacticAnalysis.get],
     ["get_opposition_report", "读取球队级对手报告原生观察数据与元数据（OppositionReportVisuals：时间范围、表现摘要、观察数据、对手/赛事引用）；报告正文若仅在战术面板绑定中提供，则不打开面板、不模拟输入。", {}, [], tacticAnalysis.opposition],
     ["get_tactic_suggestion", "预览让 staff 刷新战术建议（SuggestedTeam 1349935671 / SuggestedChanges 1114723152，target=Tactic，data=当前建议列表）；kind=team|changes。只读。", tacticSuggestionArgs, ["kind"], tacticSuggestion.preview],
     ["request_tactic_suggestion", "按原 token 发送建议刷新事件；派发不证明建议已重算或显示。", tacticSuggestionArgs, ["kind", "expectedChoiceToken", "operationId"], tacticSuggestion.execute],
@@ -536,7 +538,7 @@ export function createExtendedTools(call) {
     ["get_match_team_stats_and_xg", "只读读取直播比赛双方比分、进球名单、控球率、射门/射正、角球、犯规、观众与xG（默认不拉取巨型射门坐标数组，需坐标请传 includeShotMap: true）。", { includeShotMap: { type: "boolean", default: false } }, [], matchAnalytics.teamStatsAndXg],
     ["get_match_momentum_and_dugout", "只读读取直播比赛动量趋势数据点与总结、教练席实时事件提示时间线（MAT-R12/R29/R09）。", {}, [], matchAnalytics.momentumAndDugout],
     ["get_match_passing_network", "只读读取直播比赛双方传球分布与传球网络节点起止坐标（MAT-R19/R21）。", {}, [], matchAnalytics.passingNetwork],
-    ["get_match_player_live_stats", "只读读取直播比赛双方场上球员评分、进球助攻、红黄牌、xG/xA、传球成功率、关键传球、防守与跑动数据（默认 compact=true 省略全0冗余字段，需全量43项传 compact: false）。", { side: { type: "string", enum: ["home", "away", "both"], default: "home" }, limit: { type: "integer", minimum: 1, maximum: 25, default: 15 }, compact: { type: "boolean", default: true } }, [], matchAnalytics.playerLiveStats],
+    ["get_match_player_live_stats", "只读读取直播比赛双方场上球员评分、进球助攻、红黄牌、xG/xA、传球成功率、关键传球、防守与跑动数据（默认 side='both' 同时返回主客队、compact=true 省略全0冗余字段，需全量43项传 compact: false）。", { side: { type: "string", enum: ["home", "away", "both"], default: "both" }, limit: { type: "integer", minimum: 1, maximum: 25, default: 15 }, compact: { type: "boolean", default: true } }, [], matchAnalytics.playerLiveStats],
     ["get_match_player_heatmap", "只读读取直播比赛指定球员的热区图数据（MAT-R22）。", { side: { type: "string", enum: ["home", "away"], default: "home" }, playerIndex: { type: "integer", minimum: 0, maximum: 25, default: 0 } }, [], matchAnalytics.playerHeatMap],
     ["get_squad_snapshot", "一行一人紧凑阵容快照：一次读取全队（或分页）球员姓名、球衣号、年龄、位置、体能、锐度、士气、星级、薪资、合同到期与出场承诺，20人体积小于5KB且绝不触发订阅上限。", { offset: { type: "integer", minimum: 0, default: 0 }, limit: { type: "integer", minimum: 1, maximum: 50, default: 30 }, includeContractAndStars: { type: "boolean", default: true } }, [], squadSnapshot.getSquadSnapshot],
     ["get_player_career_playing_time_and_reserves", "只读读取一线队指定球员的生涯履历、约定与实际出场时间、外租/租借合同详情（含对方承担工资、起止日、能否召回）、预备队出场授权及球探/教练优缺点报告（默认 compact=true 紧凑模式）。", { playerIndex: { type: "integer", minimum: 0, maximum: 60, default: 0 }, compact: { type: "boolean", default: true } }, [], playerScouting.playerCareerAndPlayingTime],
@@ -552,7 +554,7 @@ export function createExtendedTools(call) {
     ["get_competition_awards_and_stats", "只读读取本队指定参赛赛事的最佳阵容、月度/周度奖项、球员/球队统计榜、xG榜及抽签情况（MGR-R17/R10）。", { compIndex: { type: "integer", minimum: 0, default: 0 } }, [], compAwards.competitionAwardsAndStats],
     ["get_nations_and_international_overview", "只读读取国家页：可用国家队、大洲容器、活跃国家数及国际赛事规则组（MGR-R18）。", {}, [], compAwards.nationsAndInternationalOverview],
     ["compare_players", "只读横向比较 2~4 名一线队球员的年龄、位置、体能、士气、比赛状态、身价、薪资、身高体重与生涯荣誉（REC-R20）。", { playerIndices: { type: "array", items: { type: "integer", minimum: 0, maximum: 60 }, minItems: 2, maxItems: 4 } }, [], playerComparison.comparePlayers],
-    ["get_datahub_analysis", "只读读取数据中心近五场优缺点统计、赛果下拉及最近一场比赛分析报告（MAT-R24/R27）。", { analysisId: { type: "integer", minimum: 0, default: 0 } }, [], datahubTr.getDatahubAnalysis],
+    ["get_datahub_analysis", "只读读取数据中心近五场优缺点统计、赛果下拉及最近一场比赛分析报告（默认 compact=true 防爆上下文，需全量传 compact: false；MAT-R24/R27）。", { analysisId: { type: "integer", minimum: 0, default: 0 }, compact: { type: "boolean", default: true } }, [], datahubTr.getDatahubAnalysis],
     ["get_transfer_room_adverts", "只读读取俱乐部 TransferRoom 已发布广告、应答列表与推荐球员（REC-R07）。", {}, [], datahubTr.getTransferRoomAdverts],
     ["get_squad_planner", "只读读取阵容规划器当前规划、助教排序选项与阵容短板摘要（SQU-R11/O10）。", { squadPlanType: { type: "integer", minimum: 0, default: 0 }, tacticIndex: { type: "integer", minimum: 0, default: 0 }, positionIndex: { type: "integer", minimum: 0, default: 0 }, showAllPositions: { type: "boolean", default: false } }, [], squadPlanner.readSquadPlanner],
     ["ask_assistant_squad_planner", "向阵容规划器发送采用助教排序建议（0位置/1战术/2赛季/3整体）并重新读回当前规划（SQU-O10d）。", { optionValue: { type: "integer", minimum: 0, maximum: 3, default: 3 }, operationId: text }, [], squadPlanner.askAssistant],
@@ -563,7 +565,9 @@ export function createExtendedTools(call) {
     ["declare_interest_in_job", "按工作中心市场广告索引对空缺职位表达执教兴趣（EventFmxDeclareInterestInJob，MGR-O14b）。", { index: { type: "integer", minimum: 0 }, operationId: text }, ["index"], jobAdverts.declareInterestInJob],
     ["offer_staff_interview", "邀请职员空缺应聘者参加面试（EventFmxOfferJobInterview，CLB-O14b）。", { candidateIndex: { type: "integer", minimum: 0, default: 0 }, operationId: text }, [], jobAdverts.offerStaffInterview],
     ["make_staff_contract_decision", "执行职员合同与任用决策（EventFmxMakeContractDecision，CLB-O15）。", { decisionIndex: { type: "integer", minimum: 0, default: 0 }, operationId: text }, [], jobAdverts.makeStaffContractDecision],
-    ["get_past_match_report", "只读读取历史比赛赛果列表、比赛报告摘要、集锦列表与球员战术评分数据（MAT-R17）。", { fixtureIndex: { type: "integer", minimum: 0, default: 0 } }, [], pastMatchReport.getPastMatchReport],
+    ["get_past_match_report", "只读读取历史比赛赛果列表、比赛报告摘要、集锦列表与球员战术评分数据（默认 compact=true 防爆上下文，需全量传 compact: false；MAT-R17）。", { fixtureIndex: { type: "integer", minimum: 0, default: 0 }, compact: { type: "boolean", default: true } }, [], pastMatchReport.getPastMatchReport],
+    ["get_player_attributes", "只读聚合读取本队指定球员的技术/精神/身体/门将属性（自动分批防超时，兼容 squadIndex 与 playerIndex）。", { squadIndex: squadIdx, playerIndex: { type: "integer", minimum: 0, description: "与 squadIndex 等价的球员序号" }, categories: { type: "array", items: { type: "string", enum: ["technical", "mental", "physical", "goalkeeping"] }, default: ["technical", "mental", "physical"] }, customAttributes: { type: "array", items: text } }, [], playerAttrs.getPlayerAttributes],
+    ["get_league_table_and_fixtures", "只读聚合当前联赛积分榜/排名与赛程（未来赛程及近期赛果）。", { limit: { type: "integer", minimum: 1, maximum: 30, default: 20 } }, [], playerAttrs.getLeagueTableAndFixtures],
     ["get_cup_draw_state", "只读读取当前杯赛抽签自动运行状态与抽签速度设置（MGR-R10）。", {}, [], cupDrawLeague.getCupDrawState],
     ["control_cup_draw", "驱动杯赛抽签流程（open/start/next_team/next_pot/draw_all/pause，MGR-O13）。", { action: { type: "string", enum: ["open", "start", "next_team", "next_pot", "draw_all", "pause"], default: "draw_all" }, operationId: text }, [], cupDrawLeague.controlCupDraw],
     ["manage_playable_leagues", "增加、确认或撤销可玩联赛配置变更（add/confirm/undo，MGR-O24a/b）。", { action: { type: "string", enum: ["add", "confirm", "undo"], default: "confirm" }, leagueId: { type: "integer" }, optionPath: text, operationId: text }, [], cupDrawLeague.managePlayableLeagues],

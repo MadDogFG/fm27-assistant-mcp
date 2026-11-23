@@ -1,0 +1,199 @@
+import { createLiveClient, clean, scalar } from "./live-client.mjs";
+import { hexToAscii } from "./live-query-tools.mjs";
+
+// 球员核心属性分组（FM27 原生 PersonReference 属性名）
+const ATTRIBUTE_GROUPS = {
+  technical: [
+    "Corners", "Crossing", "Dribbling", "Finishing", "FirstTouch",
+    "FreeKickTaking", "Heading", "LongShots", "LongThrows", "Marking",
+    "Passing", "PenaltyTaking", "Tackling", "Technique"
+  ],
+  mental: [
+    "Aggression", "Anticipation", "Bravery", "Composure", "Concentration",
+    "Decisions", "Determination", "Flair", "Leadership", "OffTheBall",
+    "Positioning", "Teamwork", "Vision", "WorkRate"
+  ],
+  physical: [
+    "Acceleration", "Agility", "Balance", "JumpingReach",
+    "NaturalFitness", "Pace", "Stamina", "Strength"
+  ],
+  goalkeeping: [
+    "AerialReach", "CommandOfArea", "Communication", "Eccentricity",
+    "Handling", "Kicking", "OneOnOnes", "PunchingTendency",
+    "Reflexes", "RushingOutTendency", "Throwing"
+  ]
+};
+
+function decodeCompact(val, depth = 0) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== "object") return val;
+  if (val.kind === "scalar") return clean(val.value ?? "");
+  if (val.kind === "reference") return { type: val.type, identity: val.identity };
+  if (val.kind === "list") {
+    const items = val.items || [];
+    if (depth >= 2) return `[list count=${val.count ?? items.length}]`;
+    return items.slice(0, 30).map(it => decodeCompact(it, depth + 1));
+  }
+  if (val.kind === "record" && val.fields) {
+    const out = {};
+    for (const [k, v] of Object.entries(val.fields)) {
+      out[hexToAscii(k)] = decodeCompact(v, depth + 1);
+    }
+    return out;
+  }
+  return val;
+}
+
+export function createPlayerAttributesTools(call) {
+  const client = createLiveClient(call);
+
+  /**
+   * 聚合读取本队指定球员的技术/精神/身体/门将属性（自动分批防超时，兼容 squadIndex 与 playerIndex）
+   */
+  async function getPlayerAttributes({ squadIndex, playerIndex, categories = ["technical", "mental", "physical"], customAttributes = [] } = {}) {
+    const idx = Number.isInteger(squadIndex) ? squadIndex : (Number.isInteger(playerIndex) ? playerIndex : 0);
+    return client.scope(async scope => {
+      const resolved = await scope.resolvePlayerRef({ squadIndex: idx });
+      const pRef = { source: resolved.source, path: resolved.path };
+      const human = { source: "human" };
+      const teamRef = { source: resolved.team.handle };
+      const pCtx = { human, Human: human, team: teamRef, Team: teamRef, Person: pRef, InPossession: true };
+
+      const nameR = await scope.readAndRelease(pRef, "Name", pCtx, 700);
+      const posR = await scope.readAndRelease(pRef, "PositionString", pCtx, 500);
+      const ageR = await scope.readAndRelease(pRef, "Age", pCtx, 500);
+      const numR = await scope.readAndRelease(pRef, "SquadNumber", pCtx, 500);
+
+      // 动态探测该球员节点支持的属性名（避免逐个猜 AttributeXxx 或裸名）
+      const metaProps = await scope.properties(pRef, "").catch(() => []);
+      const propSet = new Set(metaProps.map(p => p.name.split(":")[0]));
+
+      const targetGroups = Array.isArray(categories) && categories.length ? categories : ["technical", "mental", "physical"];
+      const attributes = {};
+
+      async function readAttrValue(baseName) {
+        const candidates = [baseName, `Attribute${baseName}`, `PlayerAttribute${baseName}`];
+        const matched = candidates.find(c => propSet.has(c));
+        if (!matched) return null;
+        const r = await scope.readAndRelease(pRef, matched, pCtx, 600);
+        if (!r.ok || r.value === null) return null;
+        return r.scalar !== null ? r.scalar : decodeCompact(r.value, 1);
+      }
+
+      for (const groupName of targetGroups) {
+        const list = ATTRIBUTE_GROUPS[groupName];
+        if (!list) continue;
+        const groupData = {};
+        for (let i = 0; i < list.length; i++) {
+          const val = await readAttrValue(list[i]);
+          if (val !== null) groupData[list[i]] = val;
+          if ((i + 1) % 6 === 0) await new Promise(r => setTimeout(r, 30));
+        }
+        attributes[groupName] = groupData;
+      }
+
+      if (Array.isArray(customAttributes) && customAttributes.length) {
+        const custom = {};
+        for (const attr of customAttributes.slice(0, 20)) {
+          const val = await readAttrValue(attr);
+          if (val !== null) custom[attr] = val;
+        }
+        attributes.custom = custom;
+      }
+
+      return {
+        ok: true,
+        readOnly: true,
+        squadIndex: idx,
+        player: {
+          name: nameR.scalar || null,
+          squadNumber: numR.scalar || null,
+          age: ageR.scalar || null,
+          position: posR.scalar || null
+        },
+        attributes
+      };
+    });
+  }
+
+  /**
+   * 只读聚合当前联赛积分榜/排名与赛程（自动探测 Team / Club / Comp 原生属性并解析队名）
+   */
+  async function getLeagueTableAndFixtures({ limit = 20 } = {}) {
+    const maxRows = Math.max(1, Math.min(30, Number(limit) || 20));
+    return client.scope(async scope => {
+      const human = { source: "human" };
+      const team = await scope.subscribe("human", "Team", { human, Human: human });
+      const club = await scope.subscribeOptional("human", "Club", { human, Human: human }, 1500);
+      const ctx = {
+        human, Human: human,
+        team: { source: team.handle }, Team: { source: team.handle },
+        ...(club.handle ? { club: { source: club.handle }, Club: { source: club.handle } } : {})
+      };
+
+      const teamName = await scope.resolveRefName(team.handle, ctx, 500);
+      const teamProps = await scope.properties(team.handle, "").catch(() => []);
+      const teamPropNames = new Set(teamProps.map(p => p.name.split(":")[0]));
+
+      // 1. 探测当前主联赛引用及排名文本
+      let leagueName = null;
+      let leaguePosition = null;
+      let leagueTable = null;
+      const posProp = ["LeaguePositionString", "LeaguePosition", "CurrentLeaguePosition", "DivisionPositionString"].find(p => teamPropNames.has(p));
+      if (posProp) {
+        const posR = await scope.readAndRelease(team.handle, posProp, ctx, 800);
+        leaguePosition = posR.scalar || decodeCompact(posR.value, 1);
+      }
+
+      const compProp = ["LeagueComp", "MainDivision", "CurrentComp1", "Division", "Competition"].find(p => teamPropNames.has(p));
+      if (compProp) {
+        const compSub = await scope.subscribeOptional(team.handle, compProp, ctx, 1200);
+        if (compSub.handle && compSub.read?.value?.kind === "reference") {
+          leagueName = await scope.resolveRefName(compSub.handle, ctx, 600);
+          const compProps = await scope.properties(compSub.handle, "").catch(() => []);
+          const compPropNames = new Set(compProps.map(p => p.name.split(":")[0]));
+          const tableProp = ["LeagueTable", "LeagueTableRows", "Standings", "TableRows", "Stages"].find(p => compPropNames.has(p));
+          if (tableProp) {
+            const tblSub = await scope.subscribeOptional(compSub.handle, tableProp, ctx, 1500);
+            if (tblSub.handle && tblSub.read?.value) {
+              leagueTable = decodeCompact(tblSub.read.value, 0);
+            }
+          }
+        }
+      }
+
+      // 2. 探测赛程列表（未来赛程 + 历史赛程）
+      const fixtures = {};
+      for (const fProp of ["Fixtures", "UpcomingFixtures", "Next5Fixtures", "RecentFixtures", "PlayedFixtures", "NextMatchInformation"]) {
+        if (!teamPropNames.has(fProp)) continue;
+        const fSub = await scope.subscribeOptional(team.handle, fProp, ctx, 1200);
+        if (fSub.handle && fSub.read?.value) {
+          const val = fSub.read.value;
+          if (val.kind === "list" && Array.isArray(val.items)) {
+            fixtures[fProp] = {
+              count: val.count ?? val.items.length,
+              items: val.items.slice(0, maxRows).map(it => decodeCompact(it, 1))
+            };
+          } else {
+            fixtures[fProp] = decodeCompact(val, 1);
+          }
+          await scope.release(fSub.handle);
+        }
+      }
+
+      return {
+        ok: true,
+        readOnly: true,
+        teamName,
+        league: {
+          name: leagueName,
+          position: leaguePosition,
+          table: leagueTable
+        },
+        fixtures
+      };
+    });
+  }
+
+  return { getPlayerAttributes, getLeagueTableAndFixtures };
+}

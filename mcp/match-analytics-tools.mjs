@@ -123,8 +123,8 @@ export function createMatchAnalyticsTools(call) {
     });
   }
 
-  // MAT-R13 / MAT-R14 / MAT-R19 / MAT-R25 / MAT-R26: 双方球员比赛评分与完整个人实时统计
-  async function playerLiveStats({ side = "home", limit = 15, compact = true } = {}) {
+  // MAT-R13 / MAT-R14 / MAT-R19 / MAT-R25 / MAT-R26: 双方球员比赛评分与完整个人实时统计（默认 both 同时返回主客队）
+  async function playerLiveStats({ side = "both", limit = 15, compact = true } = {}) {
     const state = await requireInMatch();
     const idMap = await getPropertyMap();
     const sides = side === "both" ? ["home", "away"] : [side === "away" ? "away" : "home"];
@@ -154,7 +154,7 @@ export function createMatchAnalyticsTools(call) {
       result[s] = await client.scope(async scope => {
         const team = await scope.subscribeOptional("human", "Team", {}, 800);
         const teamCtx = team.handle ? { source: team.handle } : { source: "human", path: "Team" };
-        const listSub = await scope.subscribeOptional("match", "PlayerMatchStats", { isHomeTeam: isHome }, 1500);
+        const listSub = await scope.subscribeOptional("match", "PlayerMatchStats", { isHomeTeam: isHome, IsHomeTeam: isHome }, 1500);
         const items = listSub.read?.value?.items || [];
         const totalCount = items.length;
         const count = Math.min(totalCount, Math.max(1, Number(limit) || 15));

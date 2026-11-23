@@ -4,16 +4,37 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export function createRecruitmentTools(call) {
   const client = createLiveClient(call);
+  // 安全获取 ScoutingInfo 引用：优先 human.ScoutingInfo，若为 NullReference 则尝试 club.ScoutingInfo，避免抛出 HTTP 400
+  async function resolveScoutingInfo(scope, contexts) {
+    const info = await scope.subscribeOptional("human", "ScoutingInfo", contexts, 2000);
+    if (info.handle && info.read?.value?.kind === "reference" && info.read?.value?.identity) {
+      return { handle: info.handle, source: "human" };
+    }
+    const club = await scope.subscribeOptional("human", "Club", contexts, 1500);
+    if (club.handle && club.read?.value?.kind === "reference") {
+      const clubInfo = await scope.subscribeOptional(club.handle, "ScoutingInfo", { ...contexts, club: { source: club.handle }, Club: { source: club.handle } }, 2000);
+      if (clubInfo.handle && clubInfo.read?.value?.kind === "reference" && clubInfo.read?.value?.identity) {
+        return { handle: clubInfo.handle, source: "club" };
+      }
+    }
+    return {
+      handle: null,
+      unavailable: info.unavailable || `ScoutingInfo 为空引用（${info.read?.value?.type || "NullReference"}），可能当前存档/联机档尚未初始化球探招募中心或招募重点委派给了总监。`
+    };
+  }
+
   async function context(args, action) {
     const mode = args.mode || "new";
     if (!["new", "existing"].includes(mode) || mode === "existing" && !args.focusPath) throw new Error("使用 new 或 existing；已有重点必须提供实际 focusPath。");
     return client.scope(async scope => {
       const team = await scope.subscribe("human", "Team");
       const contexts = { human: { source: "human" }, Human: { source: "human" }, team: { source: team.handle }, Team: { source: team.handle } };
-      const info = await scope.subscribeOptional("human", "ScoutingInfo", contexts);
+      const info = await resolveScoutingInfo(scope, contexts);
       if (!info.handle) return { ok: true, available: false, unavailable: info.unavailable };
-      const source = await scope.subscribeOptional(info.handle, mode === "new" ? "NewRecruitmentFocus" : "RecruitmentFocusesList", contexts);
-      if (!source.handle) return { ok: true, available: false, unavailable: source.unavailable };
+      const source = await scope.subscribeOptional(info.handle, mode === "new" ? "NewRecruitmentFocus" : "RecruitmentFocusesList", contexts, 2000);
+      if (!source.handle || (mode === "new" && source.read?.value?.kind !== "reference")) {
+        return { ok: true, available: false, unavailable: source.unavailable || "NewRecruitmentFocus 为空引用，当前无法创建招募重点草稿。" };
+      }
       const focus = { source: source.handle, path: mode === "new" ? "" : args.focusPath };
       const query = { info: info.handle, ...focus };
       return action({ scope, focus, query, contexts, team: team.handle });
@@ -129,8 +150,11 @@ export function createRecruitmentTools(call) {
     list: () => client.scope(async scope => {
       const team = await scope.subscribe("human", "Team");
       const contexts = { human: { source: "human" }, Human: { source: "human" }, team: { source: team.handle }, Team: { source: team.handle } };
-      const info = await scope.subscribe("human", "ScoutingInfo", contexts);
-      return { ok: true, focuses: (await scope.subscribe(info.handle, "RecruitmentFocusesList", contexts)).read.value, liveVerified: false };
+      const info = await resolveScoutingInfo(scope, contexts);
+      if (!info.handle) return { ok: true, available: false, focuses: [], unavailable: info.unavailable, liveVerified: false };
+      const listSub = await scope.subscribeOptional(info.handle, "RecruitmentFocusesList", contexts, 2000);
+      if (!listSub.handle) return { ok: true, available: false, focuses: [], unavailable: listSub.unavailable, liveVerified: false };
+      return { ok: true, available: true, focuses: listSub.read.value, liveVerified: false };
     }),
     get: args => setting(args, async ({ value }) => value),
     set: async args => {

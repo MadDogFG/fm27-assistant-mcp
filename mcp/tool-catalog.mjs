@@ -25,13 +25,13 @@ export function classifyToolDomain(name) {
   if (/training|mentoring|schedule|rest|intensity|match_prep|session|unit/i.test(name)) {
     return "training";
   }
-  if (/squad|lineup|captain|number|registration|injury|medical|physio|youth|callup|intl|international|playing_time|reserves|discipline|team_talk|availability|holiday.*player|comparison/i.test(name)) {
+  if (/squad|lineup|captain|number|registration|injury|medical|physio|youth|callup|intl|international|playing_time|reserves|discipline|team_talk|availability|holiday.*player|comparison|player_attributes/i.test(name)) {
     return "squad";
   }
   if (/scout|recruitment|shortlist|transfer|loan|contract|offer|clause|negotiation|trial|work_permit|precontract|trade|mls|draft|search_filter|agent|dof/i.test(name)) {
     return "recruitment";
   }
-  if (/club|board|budget|finance|vision|affiliate|staff(?!_meeting|_advice)|conduct|facility|facilities/i.test(name)) {
+  if (/club|board|budget|finance|vision|affiliate|staff(?!_meeting|_advice)|conduct|facility|facilities|league_table|fixture/i.test(name)) {
     return "club";
   }
   if (/inbox|news|mail|message|meeting|press|interview|conversation|promise|career|job|advert|cup_draw|manager|holiday|follow|advice|induction/i.test(name)) {
@@ -43,6 +43,33 @@ export function classifyToolDomain(name) {
   return "system";
 }
 
+// 中英文常见检索同义词表，解决 fm_discover 传中文或空格多词查询返回 0 条的问题
+const QUERY_SYNONYMS = [
+  ["积分榜", "排名", "联赛", "table", "standings", "league", "league_table"],
+  ["赛程", "比赛", "fixture", "fixtures", "schedule", "match", "past_match"],
+  ["属性", "能力", "ca", "pa", "attribute", "attributes", "player_attributes"],
+  ["对手", "球探报告", "opponent", "opposition", "scout_report"],
+  ["续约", "合同", "谈判", "contract", "renew", "negotiation"],
+  ["定位球", "角球", "任意球", "点球", "set_piece", "setpiece", "corner", "penalty"],
+  ["首发", "阵容", "名单", "lineup", "squad", "snapshot"],
+  ["预算", "财政", "转会费", "工资", "budget", "finance", "wage"],
+  ["训练", "休息", "体能", "training", "rest", "intensity", "condition"],
+  ["搜索", "筛选", "候选", "买人", "search", "filter", "shortlist", "recruitment"]
+];
+
+function expandQueryTokens(rawQuery) {
+  const tokens = rawQuery.split(/[\s,，、/|]+/).map(s => s.trim()).filter(Boolean);
+  const expanded = new Set(tokens);
+  for (const t of tokens) {
+    for (const group of QUERY_SYNONYMS) {
+      if (group.some(word => t.includes(word) || word.includes(t))) {
+        for (const w of group) expanded.add(w);
+      }
+    }
+  }
+  return [...expanded];
+}
+
 /**
  * 执行按领域与关键词的渐进式发现
  */
@@ -52,12 +79,32 @@ export function discoverTools(allTools, { domain = "all", query = "", detail = f
   const start = Math.max(0, Number(offset) || 0);
   const maxItems = Math.max(1, Math.min(120, Number(limit) || 80));
 
-  const matched = allTools.filter(tool => {
+  const tokens = q ? expandQueryTokens(q) : [];
+
+  const scored = [];
+  for (const tool of allTools) {
     const toolDomain = classifyToolDomain(tool.name);
-    if (normalizedDomain !== "all" && toolDomain !== normalizedDomain) return false;
-    if (!q) return true;
-    return tool.name.toLowerCase().includes(q) || (tool.description || "").toLowerCase().includes(q);
-  });
+    if (normalizedDomain !== "all" && toolDomain !== normalizedDomain) continue;
+    if (!q) {
+      scored.push({ tool, score: 1 });
+      continue;
+    }
+    const nameL = tool.name.toLowerCase();
+    const descL = (tool.description || "").toLowerCase();
+    if (nameL.includes(q) || descL.includes(q)) {
+      scored.push({ tool, score: nameL.includes(q) ? 100 : 80 });
+      continue;
+    }
+    let hits = 0;
+    for (const tok of tokens) {
+      if (nameL.includes(tok)) hits += 3;
+      else if (descL.includes(tok)) hits += 1;
+    }
+    if (hits > 0) scored.push({ tool, score: hits });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  const matched = scored.map(s => s.tool);
 
   const sliced = matched.slice(start, start + maxItems).map(tool => {
     const item = {

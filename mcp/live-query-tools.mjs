@@ -213,9 +213,28 @@ export function createLiveQueryTools(call) {
     return true;
   }
 
+  // 瞬态实时通道错误自动退避重试（解决游戏数据尚未就绪或短句柄过期导致的偶发失败）
+  async function withTransientRetry(fn, maxAttempts = 3) {
+    let lastErr;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        const msg = String(err?.message || err);
+        if (attempt < maxAttempts && /游戏数据未就绪|Unknown or expired channel handle|Value is not a game data reference/i.test(msg)) {
+          await new Promise(resolve => setTimeout(resolve, attempt * 220));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
+  }
+
   // 1. live_describe：探索节点上可用属性及所需上下文，无需盲猜
   async function describe({ node = "team", filter = "", limit = 100, contexts: userContexts = {} } = {}) {
-    return client.scope(async scope => {
+    return withTransientRetry(() => client.scope(async scope => {
       const resolved = await resolveNode(scope, node, userContexts);
       let inspectTarget = resolved.ref;
       // 如果当前节点是列表集合（如 team.Players），自动取第 0 个元素探测单条记录的可用属性
@@ -243,10 +262,10 @@ export function createLiveQueryTools(call) {
         truncated: props.length > mapped.length,
         properties: mapped
       };
-    });
+    }));
   }
 
-  // 2. live_query：结构化只读查询任意节点/列表的属性，支持过滤、排序、引用解析与 hex 解码
+  // 2. live_query：结构化只读查询任意节点/列表的属性，支持过滤、排序、引用解析、分批防超时与 hex 解码
   async function query({
     node = "team",
     select = [],
@@ -261,17 +280,24 @@ export function createLiveQueryTools(call) {
     if (!Array.isArray(select) || !select.length) {
       throw new Error("必须提供 select 属性名数组（可先用 live_describe 查看可用属性）。");
     }
-    return client.scope(async scope => {
+    return withTransientRetry(() => client.scope(async scope => {
       const resolved = await resolveNode(scope, node, userContexts);
       const isList = resolved.value?.kind === "list" && Array.isArray(resolved.value.items);
 
-      // 场景 A：单节点直接查询（如 club / team / Players/19）
+      // 场景 A：单节点直接查询（如 club / team / Players/19），超过 6 个字段时自动按批次释放句柄防超时
       if (!isList) {
         const metaProps = await scope.properties(resolved.ref, "").catch(() => []);
         const propNamesCache = metaProps.map(p => p.name.split(":")[0]);
         const record = {};
-        for (const field of select) {
-          record[field] = await readField(scope, resolved.ref, field, resolved.contexts, resolveRefs, raw, propNamesCache);
+        const batchSize = 6;
+        for (let b = 0; b < select.length; b += batchSize) {
+          const chunk = select.slice(b, b + batchSize);
+          for (const field of chunk) {
+            record[field] = await readField(scope, resolved.ref, field, resolved.contexts, resolveRefs, raw, propNamesCache);
+          }
+          if (b + batchSize < select.length) {
+            await new Promise(resolve => setTimeout(resolve, 40));
+          }
         }
         return { ok: true, readOnly: true, mode: "record", node, data: record };
       }
@@ -335,7 +361,7 @@ export function createLiveQueryTools(call) {
         returned: paged.length,
         rows: paged
       };
-    });
+    }));
   }
 
   return { describe, query };

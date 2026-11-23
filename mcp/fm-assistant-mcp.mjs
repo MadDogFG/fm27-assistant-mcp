@@ -307,12 +307,90 @@ function replyError(id, code, message) {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
+// 进程内写命令串行队列，避免 Agent 并发发送多个写操作时相互竞争导致 unverified_timeout
+let writeQueue = Promise.resolve();
+function isReadOnlyTool(name) {
+  return /^(get_|list_|read_|preview_|compare_|live_describe|live_query|live_properties|live_read|plugin_health|fm_discover|operation_status|fm_assistant_bindings_)/i.test(name || "");
+}
+function runSerializedIfWrite(name, fn) {
+  if (isReadOnlyTool(name)) return fn();
+  const next = writeQueue.then(fn, fn);
+  writeQueue = next.catch(() => {});
+  return next;
+}
+
 async function callTool(name, args) {
+  return runSerializedIfWrite(name, async () => callToolImpl(name, args));
+}
+
+const COMPACTABLE_HEAVY_TOOLS = new Set(["get_tactic_analysis", "get_datahub_analysis", "get_past_match_report"]);
+
+// 对重型分析/战报工具在 compact !== false 时递归剪枝深层嵌套与超长数组，将 ~260KB 压至 ~10KB 防爆上下文
+function compactHeavyValue(val, depth = 0) {
+  if (val === null || val === undefined || typeof val !== "object") return val;
+  if (Array.isArray(val)) {
+    if (depth >= 3) return `[array length=${val.length}]`;
+    const limit = depth <= 1 ? 15 : 8;
+    const sliced = val.slice(0, limit).map(item => compactHeavyValue(item, depth + 1));
+    if (val.length > limit) sliced.push(`[...${val.length - limit} more items, pass compact:false for full tree]`);
+    return sliced;
+  }
+  if (val.kind === "scalar") return val.value ?? null;
+  if (val.kind === "list" && Array.isArray(val.items)) {
+    if (depth >= 3) return `[list count=${val.count ?? val.items.length}]`;
+    const limit = 10;
+    return {
+      count: val.count ?? val.items.length,
+      items: val.items.slice(0, limit).map(item => compactHeavyValue(item, depth + 1)),
+      ...(val.items.length > limit ? { truncatedInCompact: val.items.length - limit } : {})
+    };
+  }
+  if (depth >= 4) {
+    if (val.identity) return { type: val.type, identity: val.identity };
+    return `[object keys=${Object.keys(val).length}]`;
+  }
+  const out = {};
+  const entries = Object.entries(val);
+  const maxKeys = depth <= 1 ? 40 : 20;
+  for (const [k, v] of entries.slice(0, maxKeys)) {
+    if (v === null || v === undefined || v === "" || v === "0" || v === 0 || v === "False" || v === false) {
+      if (depth >= 2) continue;
+    }
+    out[k] = compactHeavyValue(v, depth + 1);
+  }
+  if (entries.length > maxKeys) out._moreKeys = entries.length - maxKeys;
+  return out;
+}
+
+// 统一兼容同族工具的 squadIndex <-> playerIndex 参数别名，避免传错参数名报 HTTP 400
+function normalizeToolArgs(name, rawArgs) {
+  if (!rawArgs || typeof rawArgs !== "object") return rawArgs || {};
+  const toolDef = tools.find(t => t.name === name);
+  const props = toolDef?.inputSchema?.properties;
+  if (!props) return rawArgs;
+  const args = { ...rawArgs };
+  if (props.playerIndex && args.playerIndex === undefined && Number.isInteger(args.squadIndex)) {
+    args.playerIndex = args.squadIndex;
+  }
+  if (props.squadIndex && args.squadIndex === undefined && Number.isInteger(args.playerIndex)) {
+    args.squadIndex = args.playerIndex;
+  }
+  return args;
+}
+
+async function callToolImpl(name, args) {
+  args = normalizeToolArgs(name, args);
   if (developmentTools.has(name) && !developmentMode) throw new Error("此工具仅用于开发和测试。");
   if (excludedTools.has(name)) {
     throw new Error("该功能不在已确认的 MCP 范围内。比赛只读，对话和谈判决定由玩家处理。");
   }
-  if (Object.hasOwn(extended.handlers, name)) return extended.handlers[name](args);
+  if (Object.hasOwn(extended.handlers, name)) {
+    const res = await extended.handlers[name](args);
+    if (COMPACTABLE_HEAVY_TOOLS.has(name) && args.compact !== false && res && typeof res === "object") {
+      return { ...compactHeavyValue(res, 0), compact: true, note: "已默认启用紧凑模式防爆上下文；如需完整原始树请传 compact: false。" };
+    }
+    return res;
+  }
   switch (name) {
     case "get_inbox": return readInbox(args);
     case "get_tactic_roles": return tacticTools.getRoles(args);
@@ -592,7 +670,30 @@ async function handleMessage(message) {
         if (!toolArgs.action) throw new Error("必须提供 action 参数（目标工具名）。");
         result = await callTool(toolArgs.action, toolArgs.params || {});
       } else if (toolName === "fm_continue_game") {
-        result = await callTool("fm_assistant_continue_game", toolArgs);
+        const mode = String(toolArgs.action || "read").toLowerCase();
+        if (mode !== "continue") {
+          result = await callTool("get_continue_game_state", {});
+        } else if (toolArgs.expectedGameIdentity && toolArgs.expectedChoiceToken && toolArgs.mutationCursor !== undefined) {
+          result = await callTool("request_continue_game", {
+            expectedGameIdentity: toolArgs.expectedGameIdentity,
+            expectedChoiceToken: toolArgs.expectedChoiceToken,
+            mutationCursor: toolArgs.mutationCursor,
+            operationId: toolArgs.operationId || `cont-${Date.now()}`
+          });
+        } else {
+          // 自动先读取当前推进状态，若可推进则自动补齐 token 并执行，不可推进则明确返回阻塞原因
+          const state = await callTool("get_continue_game_state", {});
+          if (!state?.canContinue || !state?.choiceToken) {
+            result = { ...state, autoContinueSkipped: true, note: "当前游戏未处于 CanContinue 状态，已返回真实阻塞原因（未强行推进）。" };
+          } else {
+            result = await callTool("request_continue_game", {
+              expectedGameIdentity: state.gameIdentity,
+              expectedChoiceToken: state.choiceToken,
+              mutationCursor: state.mutationCursor,
+              operationId: toolArgs.operationId || `cont-${Date.now()}`
+            });
+          }
+        }
       } else {
         result = await callTool(toolName, toolArgs);
       }

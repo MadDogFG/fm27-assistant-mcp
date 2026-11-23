@@ -31,7 +31,30 @@ export function createOppositionTools(call) {
       if (args.rowPath === undefined) {
         const opponentName = await scope.resolveRefName(opponent.handle, contexts, 500);
         const nextOpponentName = await scope.resolveRefName(nextOpponent.handle, contexts, 500);
-        return { ok: true, mode, rows: rows.read.value, opponent: opponent.read.value, opponentName,
+        // 解析对手预计首发球员的姓名、球衣号与位置，便于直接下达“盯死某号球员”指令
+        let resolvedPlayers;
+        if (mode === "players" && rows.read.value?.kind === "list" && Array.isArray(rows.read.value.items)) {
+          resolvedPlayers = [];
+          const items = rows.read.value.items.slice(0, 25);
+          for (let i = 0; i < items.length; i++) {
+            const fields = items[i]?.fields || {};
+            const personKey = Object.keys(fields).find(k => fields[k]?.kind === "reference" && fields[k]?.type === "FM.UI.PersonReference");
+            const personIdentity = personKey ? fields[personKey].identity : (items[i]?.identity ?? null);
+            let name = null, squadNumber = null, position = null;
+            if (personKey) {
+              const pRef = { source: rows.handle, path: `${i}/${personKey}` };
+              const pCtx = { ...contexts, Person: pRef };
+              const nR = await scope.readAndRelease(pRef, "Name", pCtx, 500).catch(() => null);
+              const numR = await scope.readAndRelease(pRef, "SquadNumber", pCtx, 400).catch(() => null);
+              const posR = await scope.readAndRelease(pRef, "PositionString", pCtx, 400).catch(() => null);
+              name = nR?.scalar ?? null;
+              squadNumber = numR?.scalar ?? null;
+              position = posR?.scalar ?? null;
+            }
+            resolvedPlayers.push({ rowPath: String(i), name, squadNumber, position, identity: personIdentity });
+          }
+        }
+        return { ok: true, mode, ...(resolvedPlayers ? { resolvedPlayers } : {}), rows: rows.read.value, opponent: opponent.read.value, opponentName,
           nextOpponent: nextOpponent.read.value, nextOpponentName, fixture: fixture?.read.value, kinds: Object.keys(recipes), valid: valid.read.value, liveVerified: false };
       }
       if (typeof args.rowPath !== "string" || !args.rowPath || !recipes[args.kind]) throw new Error("从原名单选择rowPath和合法kind。");

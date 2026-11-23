@@ -29,9 +29,11 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
 
 不知道玩家要你干嘛时，对照下面直接找工具（**用 `fm_call` 调用**）：
 - **“看看我们队现在什么情况 / 谁累了 / 谁合同快到期了 / 有哪些球员”**
-  -> 直接调 `get_squad_snapshot`！一行一个球员，20 多人一次看全，千万别傻傻循环单查。
+  -> 直接调 `get_squad_snapshot`！一行一个球员，20 多人一次看全；想看某人详细技术/精神/身体属性调 `get_player_attributes`。
 - **“帮我比比这俩球员谁更好”**
   -> 调 `compare_players({ playerIndices: [0, 1] })`（先从 `get_squad_snapshot` 查出对应人的 `index`）。
+- **“我们现在排第几 / 联赛积分榜和接下来赛程是什么”**
+  -> 调 `get_league_table_and_fixtures`。
 - **“看看球队士气、更衣室大佬是谁、有没有闹情绪的”**
   -> 调 `get_squad_dynamics_and_hierarchy` + `get_squad_happiness_issues`。
 - **“今天收件箱有啥事 / 帮我过一天”**

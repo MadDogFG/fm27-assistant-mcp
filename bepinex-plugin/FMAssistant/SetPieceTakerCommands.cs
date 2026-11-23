@@ -55,12 +55,12 @@ public static class SetPieceTakerCommands
             var isPersonRef = record == null && row?.Get()?.TryCast<InteropReference>() != null;
             if (record == null && !isPersonRef) throw new ArgumentException("Select a full original player row, not an ID or name.");
             if (record != null && (NegotiationActions.Flag(record, "Disabled", false) || NegotiationActions.Flag(record, "IsDisabled", false))) throw new InvalidOperationException("Game disabled a selected player.");
-            // 若为UI绑定包装记录，优先提取内嵌的真实球员引用(0x706c7972/plyr)，以便底层游戏引擎准确解析目标球员
+            // 若为UI绑定包装记录，优先按真实属性名或 0x706c7972 (plyr) 键提取内嵌球员引用
             if (record != null)
             {
                 var person = NegotiationActions.Field(record, "Person", false)
                           ?? NegotiationActions.Field(record, "Player", false)
-                          ?? NegotiationActions.Field(record, "0x706c7972", false);
+                          ?? (record.TryGetValue(0x706c7972, out var plyrVal) ? plyrVal : null);
                 if (person != null && !person.IsNull && person.Get()?.TryCast<InteropReference>() != null)
                 {
                     values.Add(TypedValue.CreateCopyFrom(person));

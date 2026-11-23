@@ -72,7 +72,21 @@ export function createPlayerTools(call) {
         } catch (error) { choice.selectable = false; choice.previewError = String(error.message || error); }
         choices.push(choice);
       }
-      return action({ scope, tactic, options, current, choices });
+      // 若主下拉候选列表为空，尝试二次读取或回退探测 TeamSelectionFilteredPlayers，给出明确上下文信息
+      let fallbackPlayers = null;
+      if (choices.length === 0) {
+        const filtered = await scope.subscribeOptional(tactic.handle, "TeamSelectionFilteredPlayers", contexts, 1200);
+        if (filtered.handle && filtered.read?.value?.kind === "list" && filtered.read.value.items?.length) {
+          fallbackPlayers = [];
+          const items = filtered.read.value.items.slice(0, 25);
+          for (let i = 0; i < items.length; i++) {
+            const pName = await scope.resolveRefName({ source: filtered.handle, path: String(i) }, contexts, 400).catch(() => null);
+            fallbackPlayers.push({ index: i, identity: items[i]?.identity ?? null, name: pName });
+          }
+          await scope.release(filtered.handle);
+        }
+      }
+      return action({ scope, tactic, options, current, choices, fallbackPlayers });
     });
   }
 
@@ -90,27 +104,68 @@ export function createPlayerTools(call) {
   return {
     withLineup: lineup,
     getMentalities: () => mentalities(async ({ current, choices }) => ({ ok: true, current: scalar(current.read.value), choices })),
-    setMentality: args => mentalities(async ({ scope, tactic, current, options, choices }) => {
-      const choice = choose(choices, args.mentality, ["id", "name"]);
-      const write = await scope.subscribe(tactic.handle, "MentalityDropdown");
-      return scope.finish(await scope.api("/api/v1/commands/set-mentality", { id: args.operationId || randomUUID(), tactic: tactic.handle,
-        current: current.handle, write: write.handle, options: options.handle, optionPath: choice.optionPath,
-        expected: args.expected ?? scalar(current.read.value) }, true));
-    }),
+    setMentality: async args => {
+      const execOnce = (opId) => mentalities(async ({ scope, tactic, current, options, choices }) => {
+        const choice = choose(choices, args.mentality, ["id", "name"]);
+        const write = await scope.subscribe(tactic.handle, "MentalityDropdown");
+        const receipt = await scope.finish(await scope.api("/api/v1/commands/set-mentality", { id: opId, tactic: tactic.handle,
+          current: current.handle, write: write.handle, options: options.handle, optionPath: choice.optionPath,
+          expected: args.expected ?? scalar(current.read.value) }, true));
+        if (receipt.status === "unverified_timeout") {
+          await pause(300);
+          const fresh = await scope.api("/api/v1/live/read", { handle: current.handle }).catch(() => null);
+          const actual = scalar(fresh?.value);
+          if (actual !== null && String(actual) === String(choice.id)) {
+            return { ...receipt, status: "verified", verified: true, after: actual, recoveredByReadback: true };
+          }
+          return { ...receipt, after: actual };
+        }
+        return receipt;
+      });
+      const first = await execOnce(args.operationId || randomUUID());
+      if (first.status === "unverified_timeout" && !args.operationId && String(first.after ?? "") !== String(first.requested ?? "")) {
+        await pause(250);
+        return execOnce(randomUUID());
+      }
+      return first;
+    },
     getInstructions: (args, kind) => instructionContext(args, kind, async ({ groups }) => ({ ok: true,
       instructions: groups.map(({ currentHandle, lockedHandle, ...rest }) => rest) })),
-    setInstruction: (args, kind) => instructionContext(args, kind, async ({ scope, tactic, groups }) => {
-      if (groups.length !== 1) throw new Error("必须明确指定一个指令组。");
-      const group = groups[0];
-      if (group.locked) throw new Error("该指令组被当前角色锁定。");
-      const option = choose(group.options, args.option, ["key", "id", "name"]);
-      return scope.finish(await scope.api("/api/v1/commands/set-instruction", { id: args.operationId || randomUUID(), tactic: tactic.handle,
-        kind, current: group.currentHandle, locked: group.lockedHandle, group: group.id, option: option.id,
-        slot: args.selectionIndex ?? -1, inPossession: phase(args), expected: args.expected ?? group.current }, true));
-    }),
-    getLineupOptions: args => lineup(args, async ({ current, choices, options }) => ({ ok: true, selectionIndex: args.selectionIndex,
+    setInstruction: async (args, kind) => {
+      const execOnce = (opId) => instructionContext(args, kind, async ({ scope, tactic, groups }) => {
+        if (groups.length !== 1) throw new Error("必须明确指定一个指令组。");
+        const group = groups[0];
+        if (group.locked) throw new Error("该指令组被当前角色锁定。");
+        const option = choose(group.options, args.option, ["key", "id", "name"]);
+        const receipt = await scope.finish(await scope.api("/api/v1/commands/set-instruction", { id: opId, tactic: tactic.handle,
+          kind, current: group.currentHandle, locked: group.lockedHandle, group: group.id, option: option.id,
+          slot: args.selectionIndex ?? -1, inPossession: phase(args), expected: args.expected ?? group.current }, true));
+        if (receipt.status === "unverified_timeout") {
+          await pause(300);
+          const fresh = await scope.api("/api/v1/live/read", { handle: group.currentHandle }).catch(() => null);
+          const actual = scalar(fresh?.value);
+          if (actual !== null && String(actual) === String(option.id)) {
+            return { ...receipt, status: "verified", verified: true, after: actual, recoveredByReadback: true };
+          }
+          return { ...receipt, after: actual };
+        }
+        return receipt;
+      });
+      const first = await execOnce(args.operationId || randomUUID());
+      // 若首次确实超时且未生效（且调用方未固定自定义 operationId），自动重试一次提升稳定性
+      if (first.status === "unverified_timeout" && !args.operationId && String(first.after ?? "") !== String(first.requested ?? "")) {
+        await pause(250);
+        return execOnce(randomUUID());
+      }
+      return first;
+    },
+    getLineupOptions: args => lineup(args, async ({ current, choices, options, fallbackPlayers }) => ({ ok: true, selectionIndex: args.selectionIndex,
       currentPlayer: current.read.value?.identity ?? null, choices, mutationCursor: choices.find(choice => choice.selectable)?.mutationCursor,
-      truncated: Boolean(options.read.value?.truncated) })),
+      truncated: Boolean(options.read.value?.truncated),
+      ...(choices.length === 0 && fallbackPlayers ? {
+        fallbackPlayers,
+        note: "游戏当前 TeamSelectionIndexDropdown 候选列表为空（可能处于赛前待处理消息流程锁或未初始化选人界面），已附带 TeamSelectionFilteredPlayers 只读名单供参考。"
+      } : {}) })),
     lineupState,
     pickPlayer: async args => {
       const receipt = await lineup(args, async ({ scope, tactic, options, current, choices }) => {
