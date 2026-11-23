@@ -323,7 +323,7 @@ async function callTool(name, args) {
   return runSerializedIfWrite(name, async () => callToolImpl(name, args));
 }
 
-const COMPACTABLE_HEAVY_TOOLS = new Set(["get_tactic_analysis", "get_datahub_analysis", "get_past_match_report"]);
+const COMPACTABLE_HEAVY_TOOLS = new Set(["get_tactic_analysis", "get_datahub_analysis", "get_past_match_report", "get_set_piece_takers"]);
 
 // 对重型分析/战报工具在 compact !== false 时递归剪枝深层嵌套与超长数组，将 ~260KB 压至 ~10KB 防爆上下文
 function compactHeavyValue(val, depth = 0) {

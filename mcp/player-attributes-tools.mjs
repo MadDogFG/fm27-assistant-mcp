@@ -60,7 +60,7 @@ export function createPlayerAttributesTools(call) {
       const pCtx = { human, Human: human, team: teamRef, Team: teamRef, Person: pRef, InPossession: true };
 
       const nameR = await scope.readAndRelease(pRef, "Name", pCtx, 700);
-      const posR = await scope.readAndRelease(pRef, "PositionString", pCtx, 500);
+      const posR = await scope.readAndRelease(pRef, "BestPositionShortString", pCtx, 500);
       const ageR = await scope.readAndRelease(pRef, "Age", pCtx, 500);
       const numR = await scope.readAndRelease(pRef, "SquadNumber", pCtx, 500);
 
@@ -150,19 +150,48 @@ export function createPlayerAttributesTools(call) {
         const compSub = await scope.subscribeOptional(team.handle, compProp, ctx, 1200);
         if (compSub.handle && compSub.read?.value?.kind === "reference") {
           leagueName = await scope.resolveRefName(compSub.handle, ctx, 600);
-          const compProps = await scope.properties(compSub.handle, "").catch(() => []);
-          const compPropNames = new Set(compProps.map(p => p.name.split(":")[0]));
-          const tableProp = ["LeagueTable", "LeagueTableRows", "Standings", "TableRows", "Stages"].find(p => compPropNames.has(p));
-          if (tableProp) {
-            const tblSub = await scope.subscribeOptional(compSub.handle, tableProp, ctx, 1500);
-            if (tblSub.handle && tblSub.read?.value) {
-              leagueTable = decodeCompact(tblSub.read.value, 0);
+          // 通过 CurrentLiveTableDefaultStage -> Stage -> LeagueTable(LeagueTableType) 获取完整联赛积分榜
+          const defStageSub = await scope.subscribeOptional(compSub.handle, "CurrentLiveTableDefaultStage", ctx, 1200);
+          if (defStageSub.handle) {
+            const stageSub = await scope.subscribeOptional(defStageSub.handle, "Stage", ctx, 1200);
+            if (stageSub.handle) {
+              const typeSub = await scope.subscribeOptional(stageSub.handle, "DefaultLeagueTableType", ctx, 1000);
+              const tableTypeVal = typeSub.handle ? scalar(typeSub.read?.value) : "0";
+              const tblCtx = { ...ctx, LeagueTableType: Number(tableTypeVal) || 0 };
+              const tblSub = await scope.subscribeOptional(stageSub.handle, "LeagueTable", tblCtx, 1500);
+              if (tblSub.handle && tblSub.read?.value?.kind === "list") {
+                const tblItems = tblSub.read.value.items || [];
+                const rows = [];
+                for (let i = 0; i < Math.min(tblItems.length, maxRows); i++) {
+                  const rowObj = decodeCompact(tblItems[i], 1);
+                  // 若行内含 TeamReference，尝试顺手解析俱乐部名称
+                  const fields = tblItems[i]?.fields || {};
+                  const teamFieldKey = Object.keys(fields).find(k => fields[k]?.kind === "reference" && fields[k]?.type === "FM.UI.TeamReference");
+                  let clubName = null;
+                  if (teamFieldKey) {
+                    clubName = await scope.resolveRefName({ source: tblSub.handle, path: `${i}/${teamFieldKey}` }, ctx, 400).catch(() => null);
+                  }
+                  rows.push({
+                    rank: i + 1,
+                    teamName: clubName || null,
+                    played: rowObj.gpld ?? null,
+                    won: rowObj.gwon ?? null,
+                    drawn: rowObj.gdrw ?? null,
+                    lost: rowObj.glos ?? null,
+                    gf: rowObj.glfr ?? null,
+                    ga: rowObj.GAgn ?? null,
+                    gd: rowObj.lgdf ?? null,
+                    points: rowObj.TJjm ?? rowObj.pts ?? null
+                  });
+                }
+                leagueTable = { count: tblSub.read.value.count ?? tblItems.length, rows };
+              }
             }
           }
         }
       }
 
-      // 2. 探测赛程列表（未来赛程 + 历史赛程）
+      // 2. 探测赛程列表（未来赛程 + 历史赛程，精简输出并解析对手队名）
       const fixtures = {};
       for (const fProp of ["Fixtures", "UpcomingFixtures", "Next5Fixtures", "RecentFixtures", "PlayedFixtures", "NextMatchInformation"]) {
         if (!teamPropNames.has(fProp)) continue;
@@ -170,10 +199,23 @@ export function createPlayerAttributesTools(call) {
         if (fSub.handle && fSub.read?.value) {
           const val = fSub.read.value;
           if (val.kind === "list" && Array.isArray(val.items)) {
-            fixtures[fProp] = {
-              count: val.count ?? val.items.length,
-              items: val.items.slice(0, maxRows).map(it => decodeCompact(it, 1))
-            };
+            const parsed = [];
+            for (let i = 0; i < Math.min(val.items.length, maxRows); i++) {
+              const item = val.items[i];
+              const row = decodeCompact(item, 1);
+              const fields = item?.fields || {};
+              const oppKey = Object.keys(fields).find(k => fields[k]?.kind === "reference" && fields[k]?.type === "FM.UI.TeamReference");
+              let opponentName = null;
+              if (oppKey) {
+                opponentName = await scope.resolveRefName({ source: fSub.handle, path: `${i}/${oppKey}` }, ctx, 400).catch(() => null);
+              }
+              if (fProp === "Next5Fixtures") {
+                parsed.push({ inDays: row.qvJ6 ?? null, opponentName });
+              } else {
+                parsed.push({ ...(opponentName ? { opponentName } : {}), ...row });
+              }
+            }
+            fixtures[fProp] = { count: val.count ?? val.items.length, items: parsed };
           } else {
             fixtures[fProp] = decodeCompact(val, 1);
           }

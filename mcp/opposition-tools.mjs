@@ -46,7 +46,7 @@ export function createOppositionTools(call) {
               const pCtx = { ...contexts, Person: pRef };
               const nR = await scope.readAndRelease(pRef, "Name", pCtx, 500).catch(() => null);
               const numR = await scope.readAndRelease(pRef, "SquadNumber", pCtx, 400).catch(() => null);
-              const posR = await scope.readAndRelease(pRef, "PositionString", pCtx, 400).catch(() => null);
+              const posR = await scope.readAndRelease(pRef, "BestPositionShortString", pCtx, 400).catch(() => null);
               name = nR?.scalar ?? null;
               squadNumber = numR?.scalar ?? null;
               position = posR?.scalar ?? null;
@@ -54,8 +54,11 @@ export function createOppositionTools(call) {
             resolvedPlayers.push({ rowPath: String(i), name, squadNumber, position, identity: personIdentity });
           }
         }
-        return { ok: true, mode, ...(resolvedPlayers ? { resolvedPlayers } : {}), rows: rows.read.value, opponent: opponent.read.value, opponentName,
-          nextOpponent: nextOpponent.read.value, nextOpponentName, fixture: fixture?.read.value, kinds: Object.keys(recipes), valid: valid.read.value, liveVerified: false };
+        const compact = args.compact !== false;
+        return { ok: true, mode, ...(resolvedPlayers ? { resolvedPlayers } : {}), ...(compact && resolvedPlayers ? {} : { rows: rows.read.value }),
+          opponent: opponent.read.value?.identity ?? opponent.read.value, opponentName,
+          nextOpponent: nextOpponent.read.value?.identity ?? nextOpponent.read.value, nextOpponentName,
+          fixture: compact ? undefined : fixture?.read.value, kinds: Object.keys(recipes), valid: valid.read.value, compact, liveVerified: false };
       }
       if (typeof args.rowPath !== "string" || !args.rowPath || !recipes[args.kind]) throw new Error("从原名单选择rowPath和合法kind。");
       const row = { source: rows.handle, path: args.rowPath };

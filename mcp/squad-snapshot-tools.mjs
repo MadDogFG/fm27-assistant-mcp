@@ -77,12 +77,13 @@ export function createSquadSnapshotTools(call) {
       const rows = [];
       let degradedFields = 0;
 
-      // 缓存预热兜底：首次读取返回空或超时时短暂退避重试一次，解决冷启动偶发 null
+      // 缓存预热兜底：仅对短暂超时/空值重试一次，若属性本身不存在则立即跳过避免拖慢耗时
       async function readRetry(ref, prop, ctx, ms) {
         let r = await scope.readAndRelease(ref, prop, ctx, ms);
+        if (!r.ok && /当前引用不提供/.test(r.unavailable || "")) return r;
         if (!r.ok || r.scalar === null) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-          r = await scope.readAndRelease(ref, prop, ctx, Math.max(ms, 850));
+          await new Promise(resolve => setTimeout(resolve, 60));
+          r = await scope.readAndRelease(ref, prop, ctx, Math.max(ms, 700));
         }
         return r;
       }
@@ -94,11 +95,11 @@ export function createSquadSnapshotTools(call) {
         const nameR = await readRetry(pRef, "Name", pCtx, 700);
         const numR = await readRetry(pRef, "SquadNumber", pCtx, 500);
         const ageR = await readRetry(pRef, "Age", pCtx, 500);
-        const posR = await readRetry(pRef, "PositionString", pCtx, 500);
+        const posR = await readRetry(pRef, "BestPositionShortString", pCtx, 500);
         const condR = await readRetry(pRef, "Condition", pCtx, 500);
         let sharpR = await readRetry(pRef, "Sharpness", pCtx, 500);
         if (!sharpR.ok || sharpR.scalar === null) {
-          sharpR = await scope.readAndRelease(pRef, "MatchSharpness", pCtx, 500);
+          sharpR = await scope.readAndRelease(pRef, "MatchSharpness", pCtx, 400);
         }
         const moraleR = await readRetry(pRef, "Morale", pCtx, 500);
 
