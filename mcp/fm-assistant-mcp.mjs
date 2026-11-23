@@ -698,10 +698,11 @@ async function handleMessage(message) {
         result = await callTool(toolName, toolArgs);
       }
       const cleanResult = guardPayloadSize(sanitizePayload(result));
+      const payloadText = JSON.stringify(cleanResult, null, 2);
       const elapsed = Date.now() - t0;
       const paramSummary = JSON.stringify(targetParams).slice(0, 200);
-      writeMcpLog(cleanResult?.ok === false ? "WARN" : "INFO", `${targetAction} (${elapsed}ms) args=${paramSummary}`);
-      reply(id, { content: [{ type: "text", text: JSON.stringify(cleanResult, null, 2) }], structuredContent: cleanResult, ...(cleanResult?.ok === false ? { isError: true } : {}) });
+      writeMcpLog(cleanResult?.ok === false ? "WARN" : "INFO", `${targetAction} (${elapsed}ms, bytes=${payloadText.length}) args=${paramSummary}`);
+      reply(id, { content: [{ type: "text", text: payloadText }], structuredContent: cleanResult, ...(cleanResult?.ok === false ? { isError: true } : {}) });
     } catch (error) {
       const elapsed = Date.now() - t0;
       const errMsg = error?.message || String(error);
