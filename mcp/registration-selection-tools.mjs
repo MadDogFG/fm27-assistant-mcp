@@ -7,7 +7,7 @@ export function createRegistrationSelectionTools(call) {
     return client.scope(async scope => {
       const team = await scope.subscribe("human", "Team");
       const human = { source: "human" }, teamRef = { source: team.handle };
-      const contexts = { ...(args.contexts || {}), Human: human, human, Team: teamRef, team: teamRef, SquadSelectionRule: args.squadSelectionRule ?? 165 };
+      const contexts = { ...(args.contexts || {}), Human: human, human, Team: teamRef, team: teamRef, SquadSelectionRule: args.squadSelectionRule ?? 165, PlayerSquadSelectionValue: Number.isInteger(args.playerSquadSelectionValue) ? args.playerSquadSelectionValue : 0 };
       const session = await scope.subscribeOptional(team.handle, "SquadRegistration", contexts);
       if (!session.handle) return { ok: true, available: false, unavailable: session.unavailable };
       const players = await scope.subscribeOptional(session.handle, "Players", contexts);
