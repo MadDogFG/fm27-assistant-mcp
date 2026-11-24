@@ -132,15 +132,15 @@ export function createManagerHolidayTools(call) {
       );
       await new Promise(r => setTimeout(r, 250));
       const after = await readHolidaySnapshot(scope);
+      const compactSnap = s => ({ isOnHoliday: s.isOnHoliday, returnFromHolidayDateText: s.returnFromHolidayDateText, returnDateType: s.returnDateType, returnDateString: s.returnDateString });
       return {
         ok: true,
         operationId: id,
         action,
         eventName: "EventFmxGoOnHoliday",
-        updates,
-        dispatch,
-        before,
-        after,
+        updatesCount: updates.length,
+        before: compactSnap(before),
+        after: compactSnap(after),
         verified: after.isOnHoliday === true
       };
     });

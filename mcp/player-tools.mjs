@@ -67,8 +67,15 @@ export function createPlayerTools(call) {
         const choice = { player: player.identity, name: clean(scalar(name.read.value)),
           currentSelectionIndex: scalar(field(display, column ? "0x61766742" : indexKey)), optionIndex: index };
         try {
-          Object.assign(choice, await scope.api("/api/v1/commands/pick-preview", { tactic: tactic.handle, options: options.handle,
-            current: current.handle, option: index, slot: args.selectionIndex, variant: args.variant }), { selectable: true });
+          const prev = await scope.api("/api/v1/commands/pick-preview", { tactic: tactic.handle, options: options.handle,
+            current: current.handle, option: index, slot: args.selectionIndex, variant: args.variant });
+          // 仅保留 pick_lineup_player 所需的核心字段，避免 26 名球员重复携带 sessionId/epoch/targetIdentity 撑爆至 17KB
+          Object.assign(choice, {
+            choiceToken: prev.choiceToken,
+            mutationCursor: prev.mutationCursor,
+            ...(prev.databaseIndex !== undefined ? { databaseIndex: prev.databaseIndex } : {}),
+            selectable: true
+          });
         } catch (error) { choice.selectable = false; choice.previewError = String(error.message || error); }
         choices.push(choice);
       }
