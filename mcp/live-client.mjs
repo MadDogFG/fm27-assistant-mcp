@@ -85,6 +85,9 @@ export function createLiveClient(call) {
       handles.push(opened.handle);
       try {
         const res = { handle: opened.handle, read: await ready(opened.handle, undefined, timeoutMs), metadata, contexts, reference: opened.reference };
+        if (source === "human" && (name === "Team" || name === "Club") && res.read?.value?.type === "SI.Bindable.NullReference") {
+          throw new Error("当前经理处于失业/待业状态（尚未执教任何俱乐部），请先使用 list_job_adverts / apply_for_job 申请新职位或加载已执教存档。");
+        }
         if (source === "human" && name === "Team" && res.read?.value?.type === "FM.UI.PersonReference") {
           try {
             const club = await subscribe("human", "Club", { human: { source: "human" } }, timeoutMs);
