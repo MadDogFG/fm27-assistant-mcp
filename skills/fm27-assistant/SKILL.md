@@ -12,7 +12,7 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
 为了不让几百个工具说明塞满你的脑子，网关默认只给你 **4 个核心工具**：
 1. **`plugin_health`**：先用它打个招呼，确认游戏开着、存档已经读进去了。如果连不上，立刻去读 [install.md](references/install.md) 手把手带玩家装好。
 2. **按话题翻对应小抄**（不要一次全读！问什么翻什么）：
-   - **想赢球/排战术/弱队防反/引擎属性权重/训练稳士气（高手主教练必读）** -> [pro-manager-playbook.md](references/pro-manager-playbook.md)
+   - **通用主教练决策思维（看人配阵/空间平衡/数据复盘/更衣室经营）** -> [pro-manager-playbook.md](references/pro-manager-playbook.md)
    - 装插件/连不上/报错 -> [install.md](references/install.md)
    - 排兵布阵、阵型、心态、定位球 -> [tactics.md](references/tactics.md)
    - 训练表、谁累了该休息、导师带小妖 -> [training.md](references/training.md)
