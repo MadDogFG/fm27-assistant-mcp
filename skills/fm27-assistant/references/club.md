@@ -3,6 +3,7 @@
 使用 `fm_discover({ domain: "club", detail: false })` 发现本领域全部工具，需要参数详情时传 `detail: true`。
 
 ## 核心能力范围
+- **联赛积分榜与赛程**：读取当前主联赛完整排名表（胜/平/负/进失球/积分）及未来 5 场对手与天数，直接调用 `get_league_table_and_fixtures`（紧凑输出 < 5KB）；赛前综合速览优先用 `get_pre_match_briefing`（~500B）。
 - **俱乐部概览与愿景**：读取俱乐部声望、设施等级、球场及财务概况（`get_club_history_and_overview`、`get_club_facilities_and_youth`）；读取董事会愿景、五年计划与支持者期待，并对新赛季愿景进行讨论与确认（`get_club_vision_draft`, `change_club_vision_draft`）。
 - **财政与预算调整**：读取工资总额、转会预算、财务预测（`get_club_budget_balances`, `get_club_finances_projection`），预览并确认转会与工资预算分配（`get_budget_allocation`, `stage_budget_allocation`, `confirm_budget_allocation`, `get_club_budget_adjustment`, `confirm_club_budget_adjustment`）。
 - **董事会请求与设施**：发起或查看董事会请求（扩建训练/青训设施、增加转会分成、增加球探/教练名额、新建附属俱乐部、新球场等）。

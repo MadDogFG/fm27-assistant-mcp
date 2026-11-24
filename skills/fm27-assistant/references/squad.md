@@ -4,7 +4,8 @@
 
 ## 核心能力范围
 - **紧凑阵容全景（首选入口）**：使用 `get_squad_snapshot` 一次性按“一行一人”读出全队姓名、球衣号、年龄、位置、体能、锐度、士气、星级、薪资、合同到期与出场承诺（20 人总返回 < 5KB），无需逐人轮询。
-- **单人与横向对比**：单人详情用 `get_player_career_playing_time_and_reserves`（默认 `compact: true` 防上下文溢出），2~4 人横向对比用 `compare_players`（已内置位置兜底）。
+- **单人与横向对比**：单人详细技术/精神/身体/门将属性用 **`get_player_attributes`**（自动分批防超时，兼容 `squadIndex` / `playerIndex`）；生涯与出场时间用 `get_player_career_playing_time_and_reserves`（默认 `compact: true` 防上下文溢出）；2~4 人横向对比用 `compare_players`。
+- **省 Token 选人原则**：赛前只需看预警请用 **`get_pre_match_briefing`**（仅 ~500B）；不要循环对 0..25 全部槽位调用 `get_lineup_options`（单槽 ~8KB），只在需要换人的具体槽位按需调用。
 - **名单与未来规划**：读取一线队、U21/预备队及 U18 青年队名单、可用性、更衣室领袖层级（`get_squad_dynamics_and_hierarchy`）及未来赛程阵容规划（`get_squad_planner`）。
 - **团队职务与号码**：正副队长任命与顺位调整（`get_captain_options`, `set_captain`, `get_captaincy_standin`）、球衣号码自动分配/手动调整/草稿确认（`get_squad_number_options`, `change_squad_numbers`, `set_player_squad_number`）、主力与替补顺位管理。
 - **赛事注册与梯队出场**：赛事大名单注册提交与资格校验（`get_squad_registration`）、授权或撤销一线队球员参加预备队/U20 比赛及出场分钟限制。

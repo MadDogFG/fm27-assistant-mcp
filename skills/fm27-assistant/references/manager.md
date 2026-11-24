@@ -3,7 +3,7 @@
 使用 `fm_discover({ domain: "manager", detail: false })` 发现本领域全部工具，需要参数详情时传 `detail: true`。
 
 ## 核心能力范围
-- **收件箱与日常推进**：读取收件箱列表与邮件详情、处理星标/归档/批量已读（`get_inbox`, `mark_all_messages_read`）、触发游戏日期推进（`fm_continue_game`）。
+- **收件箱与日常推进**：读取收件箱列表与邮件详情、处理星标/归档/批量已读（`get_inbox`、`mark_all_messages_read({})` 支持免预览一键标已读）；推进日期直接用 `fm_continue_game({ action: "continue" })`（若返回 `reason: "processing_card_timer_active"` 表示游戏正在走日历进度条，等待 2 秒再读即可；若返回 `process_current_manager_message` 且未读消息均为 `canRespond: false` 纯通知，调一次 `mark_all_messages_read({})` 即可解锁）。
 - **友谊赛与日程**：查看赛程、按日期/对手/球场安排友谊赛或取消友谊赛。
 - **职员会议与建议**：读取并应用定期职员会议与助教/教练组建议（`get_staff_meeting_apply_all`, `apply_staff_meeting_advice_all`）。
 - **新闻、发布会与谈话入口**：读取活跃承诺、球员不满与新闻采访状态；接受或谢绝新闻发布会与非比赛谈话邀请；读取入职引导进度或跳过引导。
