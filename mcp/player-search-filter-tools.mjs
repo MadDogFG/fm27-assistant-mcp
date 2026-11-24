@@ -130,18 +130,23 @@ export function createPlayerSearchFilterTools(call) {
           const sName = await scope.subscribeOptional(gs.handle, "Name", {}, 800);
           const sList = await scope.subscribeOptional(gs.handle, "PersonList", {}, 800);
           if (sName.handle && sList.handle) {
+            const sDone = await scope.subscribeOptional(gs.handle, "SearchIsFinished", {}, 600);
+            const beforeFirstId = (await scope.ready(sList.handle)).value?.items?.[0]?.identity || "";
             await call(`/api/v1/internal/update?handle=${encodeURIComponent(sName.handle)}&apply=true`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(cleanText(name))
             });
-            // 等待游戏搜索引擎返回结果
+            // 等待游戏搜索引擎完成刷新（避免搜不到人时误返回上一次搜索的残留缓存）
             let listVal = null;
-            for (let attempt = 0; attempt < 6; attempt++) {
+            for (let attempt = 0; attempt < 7; attempt++) {
               await new Promise(r => setTimeout(r, attempt === 0 ? 450 : 200));
               listVal = (await scope.ready(sList.handle)).value;
-              if ((listVal?.count || 0) > 0) break;
+              const doneVal = sDone.handle ? String(scalar((await scope.ready(sDone.handle)).value) ?? "") : "True";
+              const curFirstId = listVal?.items?.[0]?.identity || "";
+              if (doneVal.toLowerCase() === "true" && (curFirstId !== beforeFirstId || attempt >= 2)) break;
             }
+            if (sDone.handle) await scope.release(sDone.handle).catch(() => {});
             const totalHits = listVal?.count || 0;
             const toInspect = Math.min(totalHits, safeLimit * 2, 40);
             const matched = [];

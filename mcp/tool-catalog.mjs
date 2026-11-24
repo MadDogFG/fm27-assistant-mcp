@@ -28,7 +28,7 @@ export function classifyToolDomain(name) {
   if (/squad|lineup|captain|number|registration|injury|medical|physio|youth|callup|intl|international|playing_time|reserves|discipline|team_talk|availability|holiday.*player|comparison|player_attributes/i.test(name)) {
     return "squad";
   }
-  if (/scout|recruitment|shortlist|transfer|loan|contract|offer|clause|negotiation|trial|work_permit|precontract|trade|mls|draft|search_filter|agent|dof/i.test(name)) {
+  if (/scout|recruitment|shortlist|transfer|loan|contract|offer|clause|negotiation|trial|work_permit|precontract|trade|mls|draft|search_filter|search_players|agent|dof/i.test(name)) {
     return "recruitment";
   }
   if (/club|board|budget|finance|vision|affiliate|staff(?!_meeting|_advice)|conduct|facility|facilities|league_table|fixture/i.test(name)) {
@@ -54,7 +54,8 @@ const QUERY_SYNONYMS = [
   ["首发", "阵容", "名单", "lineup", "squad", "snapshot"],
   ["预算", "财政", "转会费", "工资", "budget", "finance", "wage"],
   ["训练", "休息", "体能", "training", "rest", "intensity", "condition"],
-  ["搜索", "筛选", "候选", "买人", "search", "filter", "shortlist", "recruitment"],
+  ["搜索", "筛选", "候选", "买人", "小妖", "自由球员", "search", "search_players", "filter", "shortlist", "recruitment"],
+  ["战术风格", "预设风格", "高位压迫", "防反", "传控", "tactical_style", "set_tactical_style"],
   ["招聘", "广告", "空缺", "求职", "职位", "职员", "job", "advert", "post_job_advert", "staff", "apply_for_job"]
 ];
 
