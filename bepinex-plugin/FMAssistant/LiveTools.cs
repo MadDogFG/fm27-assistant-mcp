@@ -149,6 +149,12 @@ public static class LiveTools
         return action();
     });
 
+    private sealed class NoActiveSaveException : InvalidOperationException
+    {
+        public NoActiveSaveException()
+            : base("当前没有活动存档（游戏内尚未载入经理存档），请在游戏内载入存档后再调用。") { }
+    }
+
     public static (int, string) Run(Func<object> action)
     {
         var completion = new TaskCompletionSource<(int, string)>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -157,6 +163,16 @@ public static class LiveTools
         {
             if (Interlocked.CompareExchange(ref state, 1, 0) != 0) return;
             try { completion.TrySetResult((200, JsonText(action()))); }
+            catch (NoActiveSaveException ex)
+            {
+                completion.TrySetResult((400, JsonText(new
+                {
+                    ok = false,
+                    code = "no_active_save",
+                    error = ex.Message,
+                    hint = "请先在 Football Manager 27 游戏主菜单载入一个经理存档并进入游戏主界面，然后重试。"
+                })));
+            }
             catch (Exception ex) { completion.TrySetResult((400, JsonText(new { ok = false, error = ex.GetBaseException().Message }))); }
         });
         if (completion.Task.Wait(5000)) return completion.Task.Result;
@@ -225,7 +241,8 @@ public static class LiveTools
             var candidates = new Dictionary<string, InteropReference>();
             var visited = 0;
             FindHumans(BindingTools.GetBindings().RootNode, candidates, ref visited, 0);
-            if (candidates.Count != 1) throw new InvalidOperationException("Expected one active human reference; found " + candidates.Count + ". Use an explicit reference.");
+            if (candidates.Count == 0) throw new NoActiveSaveException();
+            if (candidates.Count > 1) throw new InvalidOperationException("Expected one active human reference; found " + candidates.Count + ". Use an explicit reference.");
             return candidates.Values.First();
         }
         if ((source ?? "").StartsWith("singleton:", StringComparison.Ordinal))

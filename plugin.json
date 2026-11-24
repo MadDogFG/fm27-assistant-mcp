@@ -1,7 +1,7 @@
 {
   "name": "fm27-assistant",
   "displayName": "FM27 Assistant",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Football Manager 27 游戏内实时助教插件：通过 BepInEx 原生接口实现战术、训练、阵容、招募、俱乐部、经理中心全业务辅助与比赛数据只读分析，采用渐进式 Skill 披露与精简 MCP 网关架构。",
   "skills": [
     "skills/fm27-assistant"

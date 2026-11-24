@@ -10,7 +10,7 @@ namespace FMAssistant;
 public class Plugin : BasePlugin
 {
     public const string Guid = "com.fm27assistant.plugin";
-    public const string Version = "1.0.0";
+    public const string Version = "1.1.0";
 
     public static Plugin Instance { get; private set; }
 

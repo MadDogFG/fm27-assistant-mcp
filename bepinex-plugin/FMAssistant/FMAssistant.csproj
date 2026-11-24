@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <FMGameDir Condition="'$(FMGameDir)' == ''">$(FM_GAME_DIR)</FMGameDir>
     <FMGameDir Condition="'$(FMGameDir)' == '' and Exists('C:/Program Files (x86)/Steam/steamapps/common/Football Manager 27')">C:/Program Files (x86)/Steam/steamapps/common/Football Manager 27</FMGameDir>
     <AssemblyName>FMAssistant</AssemblyName>

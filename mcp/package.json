@@ -1,6 +1,6 @@
 {
   "name": "fm27-assistant-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Football Manager 27 live assistant MCP gateway (zero external npm dependencies).",
   "type": "module",
   "main": "fm-assistant-mcp.mjs",

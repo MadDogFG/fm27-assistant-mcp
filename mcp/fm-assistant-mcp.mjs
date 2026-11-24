@@ -76,11 +76,12 @@ async function call(endpoint, { method = "GET", body = null, timeout = 8000 } = 
       return call(endpoint, { method, body, timeout }, true);
     }
     if (!response.ok) {
-      const error = new Error(`HTTP ${response.status}: ${text.slice(0, 300)}`);
-      if (response.status === 504) {
-        try { error.timeoutReceipt = JSON.parse(text); }
-        catch { /* A gateway timeout may have no plugin receipt. */ }
-      }
+      let parsed = null;
+      try { parsed = JSON.parse(text); } catch { /* 非 JSON 错误体 */ }
+      const error = new Error(parsed?.error || `HTTP ${response.status}: ${text.slice(0, 300)}`);
+      if (parsed?.code) error.code = parsed.code;
+      if (parsed?.hint) error.hint = parsed.hint;
+      if (response.status === 504 && parsed) error.timeoutReceipt = parsed;
       throw error;
     }
     try {
@@ -705,7 +706,22 @@ async function handleMessage(message) {
       const elapsed = Date.now() - t0;
       const errMsg = error?.message || String(error);
       writeMcpLog("ERROR", `${targetAction} (${elapsed}ms) args=${JSON.stringify(targetParams).slice(0, 200)} err=${errMsg}`);
-      reply(id, { content: [{ type: "text", text: `调用 ${params?.name} 失败：${errMsg}` }], isError: true });
+      const isNoActiveSave = error?.code === "no_active_save" ||
+        /Expected one active human reference;\s*found 0|当前没有活动存档|No active save/i.test(errMsg);
+      if (isNoActiveSave) {
+        const payload = {
+          ok: false,
+          code: "no_active_save",
+          error: "当前没有活动存档，请在游戏内载入存档后再调用。",
+          hint: error?.hint || "请先在 Football Manager 27 游戏内载入经理存档并进入主界面，再重试本次操作。"
+        };
+        reply(id, { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], isError: true });
+      } else if (error?.hint) {
+        const payload = { ok: false, ...(error.code ? { code: error.code } : {}), error: errMsg, hint: error.hint };
+        reply(id, { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], isError: true });
+      } else {
+        reply(id, { content: [{ type: "text", text: `调用 ${params?.name} 失败：${errMsg}` }], isError: true });
+      }
     }
     return;
   }

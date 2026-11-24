@@ -215,3 +215,84 @@ test("set_tactical_style：空战术（TacticalStyleDropdown=null）时必须本
   assert.equal(res.blockedReason, "no_active_tactic");
   assert.equal(updateDispatched, 0, "空战术绝不应发出 /api/v1/internal/update");
 });
+
+test("全仓版本号一致：FMAssistant.csproj / Plugin.cs / plugin.json / package.json / mcp/package.json / fm-assistant-mcp.mjs", () => {
+  const rootPkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
+  const mcpPkg = JSON.parse(fs.readFileSync(path.join(ROOT, "mcp", "package.json"), "utf8")).version;
+  const pluginManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "plugin.json"), "utf8")).version;
+  const csproj = fs.readFileSync(path.join(ROOT, "bepinex-plugin", "FMAssistant", "FMAssistant.csproj"), "utf8");
+  const csprojVer = csproj.match(/<Version>([^<]+)<\/Version>/)?.[1];
+  const pluginCs = fs.readFileSync(path.join(ROOT, "bepinex-plugin", "FMAssistant", "Plugin.cs"), "utf8");
+  const pluginCsVer = pluginCs.match(/public const string Version = "([^"]+)";/)?.[1];
+  const mcpSrc = fs.readFileSync(path.join(ROOT, "mcp", "fm-assistant-mcp.mjs"), "utf8");
+  const mcpSrcVer = mcpSrc.match(/version:\s*"([^"]+)"/)?.[1];
+
+  assert.equal(mcpPkg, rootPkg, "mcp/package.json 版本号需与根 package.json 一致");
+  assert.equal(pluginManifest, rootPkg, "plugin.json 版本号需与根 package.json 一致");
+  assert.equal(csprojVer, rootPkg, "FMAssistant.csproj <Version> 需与根 package.json 一致");
+  assert.equal(pluginCsVer, rootPkg, "Plugin.cs Version 需与根 package.json 一致");
+  assert.equal(mcpSrcVer, rootPkg, "fm-assistant-mcp.mjs SERVER.version 需与根 package.json 一致");
+});
+
+test("MCP stdio：未载入存档（no_active_save）返回友好中文提示与 hint 字段", async () => {
+  const http = await import("node:http");
+  const mockServer = http.createServer((req, res) => {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: "Expected one active human reference; found 0. Use an explicit reference." }));
+  });
+  await new Promise(resolve => mockServer.listen(0, "127.0.0.1", resolve));
+  const { port } = mockServer.address();
+
+  const child = spawn(process.execPath, [path.join(ROOT, "mcp", "fm-assistant-mcp.mjs")], {
+    env: { ...process.env, FM_ASSISTANT_URL: `http://127.0.0.1:${port}`, FM_ASSISTANT_TOKEN: "mock-token" },
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+
+  const responses = new Map();
+  let buf = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", chunk => {
+    buf += chunk;
+    let idx;
+    while ((idx = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line) continue;
+      try {
+        const msg = JSON.parse(line);
+        if (msg.id !== undefined) responses.set(msg.id, msg);
+      } catch {}
+    }
+  });
+
+  function sendReq(id, method, params = {}) {
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    return new Promise((resolve, reject) => {
+      const deadline = Date.now() + 4000;
+      const timer = setInterval(() => {
+        if (responses.has(id)) {
+          clearInterval(timer);
+          resolve(responses.get(id));
+        } else if (Date.now() > deadline) {
+          clearInterval(timer);
+          reject(new Error(`MCP 请求 ${method} 超时`));
+        }
+      }, 20);
+    });
+  }
+
+  try {
+    await sendReq(1, "initialize", { protocolVersion: "2025-06-18" });
+    const res = await sendReq(2, "tools/call", { name: "fm_call", arguments: { action: "get_tactic_slots", params: {} } });
+    assert.equal(res.result.isError, true);
+    const body = JSON.parse(res.result.content[0].text);
+    assert.equal(body.ok, false);
+    assert.equal(body.code, "no_active_save");
+    assert.match(body.error, /当前没有活动存档/);
+    assert.ok(typeof body.hint === "string" && body.hint.includes("载入"), "应返回可读 hint 指引");
+  } finally {
+    child.stdin.end();
+    child.kill();
+    mockServer.close();
+  }
+});

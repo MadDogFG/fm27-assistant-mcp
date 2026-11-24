@@ -29,7 +29,12 @@ export function createLiveClient(call) {
       return { ok: false, operationId: args.id, status, verified: false,
         retrySafe: false, error: String(error.message || error), nextAction: "查询 operation_status；不要自动重发操作。" };
     }
-    if (result?.ok === false && !result.operationId) throw new Error(result.error || JSON.stringify(result));
+    if (result?.ok === false && !result.operationId) {
+      const err = new Error(result.error || JSON.stringify(result));
+      if (result.code) err.code = result.code;
+      if (result.hint) err.hint = result.hint;
+      throw err;
+    }
     return result;
   }
 
