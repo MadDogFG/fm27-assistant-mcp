@@ -1,6 +1,6 @@
 # 战术与定位球操作指南
 
-使用 `fm_discover({ domain: "tactics", detail: false })` 发现本领域全部工具，需要参数详情时传 `detail: true`。
+使用 `fm_discover({ domain: "tactics", detail: false })` 发现本领域全部工具，需要参数详情时传 `detail: true`。如需查阅指令相互作用、局部套路聚合与现实足球流派自由拼装原理，请翻阅 [tactical-mastery.md](tactical-mastery.md)。
 
 ## 核心能力范围
 - **战术槽与预设风格管理**：读取/切换战术槽（`get_tactic_slots`, `select_tactic_slot`）、一键切换官方预设战术风格并同步指令（`set_tactical_style`，不传参数可查看全部 11 种预设与本队推荐 TOP3）、新建战术（`get_tactic_creation`, `create_tactic`）、复制/重命名/删除及加载预设战术文件（`list_tactic_files`, `manage_tactic_slot`）。注：`get_tactic_slots` 仅返回槽位元数据，查看当前首发 11 人及场上站位请调用 `get_lineup_options`（或 `get_tactic_analysis`）。
