@@ -13,22 +13,20 @@
 
 ## 核心特性
 
-- **渐进式披露，告别上下文污染**：
-  MCP 网关默认仅向 Agent 暴露 **4 个精简元工具**（`plugin_health`、`fm_discover`、`fm_call`、`fm_continue_game`），初始 Schema 体积仅 **~1.4 KB**（相比全量暴露 270+ 工具减少 **98.8%** 上下文占用）。Agent 按领域按需加载对应 Skill 手册与具体工具参数。
-- **完全独立，零外部依赖**：
-  - MCP 服务基于纯 Node.js 18+ 原生模块实现，**无需 `npm install`**，不依赖任何第三方库、外部 Skill 或其他 MCP。
-  - C# BepInEx 插件独立运行于游戏进程内（默认监听本地 `127.0.0.1:27190`）。
-- **全面覆盖七大核心业务领域**：
-  1. **战术与定位球**：阵型、心态、球队/个人/针对性指令、助教建议、角球/任意球/点球布置。
-  2. **训练与导师**：一线队/梯队周训练日程、赛前准备、强度休息阈值、个人焦点与导师小组。
-  3. **阵容与医疗**：名单规划、球衣号码、队长任命、赛事注册、伤病治疗方案与国家队征召。
-  4. **招募与转会**：球探重点、搜索筛选、短名单管理、试训以及转会/租借/续约原生草稿填写。
-  5. **俱乐部管理**：董事会愿景、财政预算滑块分配、设施/球场请求、职员聘任、行为准则与附属俱乐部。
-  6. **经理中心**：收件箱整理、职员会议、杯赛抽签、新闻/谈话邀请处理、假期规则与生涯管理。
-  7. **比赛数据（只读）**：实时比分与阶段状态、xG/xA/射门/传球等高阶比赛分析与赛后事件战报。
-- **安全与边界合规**：
-  - 全程通过游戏原生业务事件与数据绑定运行，不模拟鼠标键盘点击，不修改存档文件或篡改属性资金。
-  - 转会报价与合同谈判严格止步于游戏原生草稿填写，最终确认与对话回复交由玩家决定。
+- **渐进式工具披露（低初始上下文占用）**：
+  MCP 网关默认仅向 Agent 暴露 **4 个精简元工具**（`plugin_health`、`fm_discover`、`fm_call`、`fm_continue_game`），初始工具 Schema 体积仅 **~1.4 KB**（相比一次性暴露 300+ 工具的初始 Schema 体积减少约 98.8%；实际长会话总 Token 消耗取决于任务调用频次，并由响应硬字节限流器与紧凑模式协同控制）。
+- **纵深安全与工程规范**：
+  - **本机随机 Bearer Token 鉴权**：插件启动自动生成 256-bit 会话密钥写入当前用户目录（`%LOCALAPPDATA%\FMAssistant\session.token`），除 `GET /health` 外所有接口强制校验，MCP 客户端自动加载并支持 401 热刷新重试。
+  - **生产 / 开发隔离与显式白名单**：生产模式默认关闭所有历史诊断路由（返回 `403`），底层通用事件与属性写入采用显式业务白名单校验。
+  - **读写分离并发与前置校验**：`fm_call` 统一前置 JSON Schema 参数校验；只读查询可并发响应，写操作与共享可变状态操作严格串行保序，配合 `DispatchJournal` 持久化意图日志与操作回执防重发。
+- **确定性足球算法 + 专业 Skills 知识库**：
+  - 内置纯 JS 零依赖确定性决策算法：`optimize_best_xi`（精确匈牙利最大权匹配最优首发 11 人与替补席）与 `audit_squad_and_contracts`（一键位置深度缺口、冗员、年龄与高薪老将体检）。
+  - 内置按需加载的四联专业手册：主教练经营指南、三层战术原子/套路/哲学全书、游戏底层机制大全与标准化运营 SOP（`skills/fm27-assistant/references/`）。
+- **完全独立，零第三方 npm 依赖**：
+  - MCP 服务与单元测试套件均基于 Node.js 20+ 原生模块实现，**无需 `npm install`**；支持 `npm test` 一键运行自动化测试并接入 GitHub Actions CI。
+- **透明的能力与验证边界**：
+  - 全程通过游戏原生业务事件与数据绑定运行，不模拟键鼠点击，不修改存档文件或篡改数值。
+  - 默认 `FM_ASSISTANT_MODE=assistant` 模式下，比赛保持只读、发布会与谈话不代答；本队续约与转会/租借报价经确认后可直接提交，外来球员新签合同的最终确认保留在游戏内合同页完成。完整逐项验证清单请参阅 [能力与验证矩阵](docs/CAPABILITIES.md)、[架构设计](ARCHITECTURE.md) 与 [工程路线图](ROADMAP.md)。
 
 ---
 
@@ -86,24 +84,45 @@
 ## 目录结构
 
 ```text
-fm27-assistant-plugin/
+fm27-assistant-mcp/
 ├── plugin.json                        # 插件清单（声明 Skill 与 MCP 配置）
+├── package.json                       # 零依赖脚本入口（npm test / npm run test:live）
 ├── mcp_config.json                    # MCP 网关服务启动配置
 ├── README.md                          # 产品说明与快速开始
+├── ARCHITECTURE.md                    # 双层架构、安全模型与并发设计
+├── ROADMAP.md                         # 分阶段工程路线图与演进规划
+├── CHANGELOG.md                       # 语义化版本变更日志
+├── .github/workflows/ci.yml           # GitHub Actions 自动化测试流水线
 ├── docs/
+│   ├── CAPABILITIES.md                # 诚实分级的能力与验证状态矩阵
 │   └── install-guide.md               # 详细安装、环境变量与排障指南
 ├── scripts/
 │   └── build-plugin.ps1               # 一键编译并部署 BepInEx 插件脚本
 ├── skills/
 │   └── fm27-assistant/
 │       ├── SKILL.md                   # 主入口 Skill（渐进式披露路由）
-│       └── references/                # 按需加载的领域手册（含一站式安装指南）
+│       └── references/                # 领域手册、战术原子全书、游戏机制与运营 SOP
 ├── mcp/
 │   ├── fm-assistant-mcp.mjs           # 精简 MCP 网关（默认仅暴露 4 个元工具）
-│   ├── tool-catalog.mjs               # 领域目录与按需检索模块
-│   └── *.mjs                          # 各业务领域原生接口实现（零外部依赖）
+│   ├── core/                          # Token 鉴权、Schema 校验、读写队列、硬字节限流
+│   ├── algorithms/                    # 纯 JS 确定性足球算法（最优首发、阵容审计）
+│   ├── tool-catalog.mjs               # 显式元数据引擎与同义词检索
+│   └── *-tools.mjs                    # 各业务领域原生接口实现（零外部依赖）
+├── tests/
+│   ├── unit/                          # 零依赖离线单元测试套件（node:test）
+│   └── live/                          # 一键真机冒烟回归测试脚本
 └── bepinex-plugin/
-    └── FMAssistant/                   # C# BepInEx 6 (Unity.IL2CPP) 插件源码
+    └── FMAssistant/                   # C# BepInEx 6 插件（AuthGuard + 分领域 HttpApi 路由）
+```
+
+## 测试与验证
+
+```bash
+# 1. 运行离线单元测试与文档完整性审计（无需启动游戏，零 npm 依赖）
+npm test
+
+# 2. 游戏运行并载入存档后，运行真机冒烟回归（自动生成 docs/live-verification-report.json）
+npm run test:live
 ```
 
 ---

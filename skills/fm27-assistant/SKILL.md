@@ -12,6 +12,7 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
 为了不让几百个工具说明塞满你的脑子，网关默认只给你 **4 个核心工具**：
 1. **`plugin_health`**：先用它打个招呼，确认游戏开着、存档已经读进去了。如果连不上，立刻去读 [install.md](references/install.md) 手把手带玩家装好。
 2. **按话题翻对应小抄**（不要一次全读！问什么翻什么）：
+   - **标准化运营工作流 SOP（赛前/复盘/转会窗/时间推进闭环）** -> [workflows.md](references/workflows.md)
    - **通用主教练经营与比赛诊断（看人/数据复盘/青训/更衣室/引援）** -> [pro-manager-playbook.md](references/pro-manager-playbook.md)
    - **战术原子、套路聚合与现实足球哲学（自由拼装任意打法）** -> [tactical-mastery.md](references/tactical-mastery.md)
    - **游戏底层机制与常识（训练/青训练满PA/熟悉度/复杂度/职员/动力学/注册规则）** -> [game-mechanics.md](references/game-mechanics.md)
@@ -49,8 +50,8 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
   -> 比赛中调 `get_match_live_report` / `get_match_team_stats_and_xg`；踢完了看 `get_past_match_report`。
 - **“帮我安排下周训练 / 哪些人该休息”**
   -> 调 `get_team_training_schedules` 看训练表，`set_team_training_intensity` 调强度/自动休息；结合 `get_squad_snapshot` 看体能。
-- **“帮我排首发、选队长、分球衣号码”**
-  -> 调 `get_lineup_options` 排首发，`get_captain_options` / `set_captain` 选正副队长，`get_squad_number_options` / `change_squad_numbers` 分号码。
+- **“帮我排最佳首发、体检阵容深度和合同风险、选队长、分球衣号码”**
+  -> 一键算最佳 11 人首发与替补席直接调 `optimize_best_xi`（确定性匈牙利算法，零心算误差）；一键查位置缺口/冗员/体能与高薪老将调 `audit_squad_and_contracts`；落地换首发调 `get_lineup_options`，选队长调 `get_captain_options` / `set_captain`，分号码调 `get_squad_number_options` / `change_squad_numbers`。
 - **“我想买人/租借/续约/按条件搜自由球员或免签目标”**
   -> 按多条件（位置/年龄/国籍/俱乐部/仅自由球员/身高）搜数据库球员直接调 `search_players`；看球探与候选调 `get_scouting_knowledge_and_reports`、`list_shortlists`；谈判与报价流程先翻 [recruitment.md](references/recruitment.md)（条款确认后可直接用 `get_negotiation_actions` + `execute_negotiation_action` 提交）。
 - **“业务工具没覆盖的冷门字段（如租借工资分担、合同条款细节、某面板原生属性）”**

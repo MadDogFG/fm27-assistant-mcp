@@ -149,16 +149,30 @@ export function createTacticSlotTools(call) {
         id: String(item.fields?.["0x7074766c"]?.value ?? idx),
         label: stripStyleText(item.fields?.["0x71764a36"]?.value || "")
       }));
+      const hasActiveTactic = Boolean(sDD.read?.value && sDD.read.value.kind === "record");
       const current = {
         styleId: String(scalar(sStyle.read?.value) ?? ""),
         dropdownId: String(sDD.read?.value?.fields?.["0x7074766c"]?.value ?? ""),
         label: stripStyleText(sDD.read?.value?.fields?.["0x71764a36"]?.value || ""),
-        mentality: sMent.handle ? String(scalar(sMent.read?.value) ?? "") : null
+        mentality: sMent.handle ? String(scalar(sMent.read?.value) ?? "") : null,
+        hasActiveTactic
       };
       const recommendedIds = (sRec.read?.value?.items || []).map(x => String(x?.value ?? x)).filter(Boolean);
 
       if (style === undefined || style === null || style === "" || previewOnly) {
         return { ok: true, readOnly: true, current, recommendedIds, options };
+      }
+
+      if (!hasActiveTactic) {
+        return {
+          ok: false,
+          verified: false,
+          blockedReason: "no_active_tactic",
+          error: "当前球队尚未创建任何活跃战术（TacticalStyle=-1 且 TacticalStyleDropdown 为空），不能直接写入预设风格。请先通过 get_tactic_creation + create_tactic 创建首套战术槽位后再切换风格。",
+          before: current,
+          recommendedIds,
+          options
+        };
       }
 
       // 解析目标风格（支持数字 ID、中文标签、英文别名模糊匹配）

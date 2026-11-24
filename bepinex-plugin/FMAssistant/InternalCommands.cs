@@ -16,14 +16,134 @@ namespace FMAssistant;
 public static class InternalCommands
 {
     private static readonly Dictionary<string, uint> PropertyIds = new(StringComparer.Ordinal);
+    private static readonly Dictionary<uint, string> PropertyNamesById = new();
     private static readonly Dictionary<string, (string Fingerprint, object Receipt)> Sent = new();
+
+    // 生产模式下允许通过 /api/v1/internal/event 派发的显式合法玩家业务事件白名单
+    private static readonly HashSet<string> AllowedProductionEvents = new(StringComparer.Ordinal)
+    {
+        "EventFmxActionDevelopmentCentreAdvice",
+        "EventFmxAddLeague",
+        "EventFmxAddPlayerToFavourite",
+        "EventFmxAddRemoveYouthPlayer",
+        "EventFmxAffiliateCancelLink",
+        "EventFmxAffiliateCancelLinkConfirm",
+        "EventFmxApplyForJob",
+        "EventFmxCancelScoutingTeam",
+        "EventFmxCompleteDraft",
+        "EventFmxConfirmAddRemoveLeagues",
+        "EventFmxConfirmTrainingFocusChanges",
+        "EventFmxConfirmTrainingSchedule",
+        "EventFmxConfirmTrainingSession",
+        "EventFmxCreateDofTargetGroup",
+        "EventFmxCreateShortlist",
+        "EventFmxDeclareInterestInJob",
+        "EventFmxDeleteDofTargetGroup",
+        "EventFmxDeleteShortlistConfirmed",
+        "EventFmxDrawAllTeams",
+        "EventFmxDrawNextPot",
+        "EventFmxDrawNextTeam",
+        "EventFmxDrawScreenOpened",
+        "EventFmxFilterRestoreAttributes",
+        "EventFmxFilterRestoreConditions",
+        "EventFmxFilterRestoreFilter",
+        "EventFmxFilterStoreAttributes",
+        "EventFmxFilterStoreConditions",
+        "EventFmxFilterStoreFilter",
+        "EventFmxGoOnHoliday",
+        "EventFmxHumanScoutFixture",
+        "EventFmxMakeContractDecision",
+        "EventFmxManagerStaffChanges",
+        "EventFmxMlsContractBudgetAdjustmentCancel",
+        "EventFmxNewsResponseAction",
+        "EventFmxOfferJobInterview",
+        "EventFmxPauseDraw",
+        "EventFmxPrioritiseScoutingTeam",
+        "EventFmxProceedToContractNegotiations",
+        "EventFmxRecruitmentFocusScoutAnalystEditConfirm",
+        "EventFmxRedraftSquadSelectionOnTimeout",
+        "EventFmxRemoveJobAdvert",
+        "EventFmxRenameDofTargetGroup",
+        "EventFmxRenameShortlist",
+        "EventFmxRenameTeamSelectionConfirm",
+        "EventFmxResetFilter",
+        "EventFmxRestartShuffleDraftCompetition",
+        "EventFmxReturnFromHoliday",
+        "EventFmxSaveCustomTrainingSchedule",
+        "EventFmxSaveTeamSelectionConfirm",
+        "EventFmxSaveTeamSelectionConfirmOverwrite",
+        "EventFmxScoutingCentreAcknowledge",
+        "EventFmxScoutingCentreResponse",
+        "EventFmxScoutingRangeEditConfirm",
+        "EventFmxSearchReset",
+        "EventFmxSearchSetName",
+        "EventFmxSelectTeamSelection",
+        "EventFmxSetActiveShortlist",
+        "EventFmxSetMlsContractBudgetAdjustment",
+        "EventFmxSetPieceAskToAssignCategory",
+        "EventFmxSetPieceAskToAssignTakers",
+        "EventFmxSetPieceEditSessionUndo",
+        "EventFmxSetPieceInstrChanged",
+        "EventFmxSetPieceRefreshResponsibilities",
+        "EventFmxSetPieceRoutineDeliverySelect",
+        "EventFmxSetPieceSecondaryInstrChanged",
+        "EventFmxSetPieceSetRoutineFrequency",
+        "EventFmxSetShortlistScoutUpdateInterval",
+        "EventFmxSpeakToDropdownActionComplete",
+        "EventFmxSpeakToQuickActionComplete",
+        "EventFmxSquadPlannerAskAssistant",
+        "EventFmxSquadPlannerMovePlayer",
+        "EventFmxSquadPlannerRemovePlayer",
+        "EventFmxStartDraw",
+        "EventFmxTradeOfferDofOpinionRequested",
+        "EventFmxTransferActivityPersonSelectionStaff",
+        "EventFmxTransferRoomAddAdvertCancel",
+        "EventFmxTransferRoomAddAdvertConfirm",
+        "EventFmxTransferRoomDeleteAdvert",
+        "EventFmxTransferRoomSelectAdvert",
+        "EventFmxUndoAddRemoveLeagues"
+    };
+
+    // 生产模式下允许通过 /api/v1/internal/update 更新的显式合法属性白名单
+    private static readonly HashSet<string> AllowedProductionProperties = new(StringComparer.Ordinal)
+    {
+        "NewsItemIsImportant",
+        "ReturnDateType",
+        "ReturnNumberDays",
+        "UseCurrentTactics",
+        "UseTeamSelection",
+        "ApplyForJobs",
+        "Name",
+        "KeepScoutingAction",
+        "ScoutPlayerAction",
+        "TacticalStyleDropdown",
+        "IsTrialIn",
+        "TrialLengthInWeeks",
+        "InjuryTreatment",
+        "InjuryAvailability"
+    };
+
+    private static void EnsurePropertyMaps()
+    {
+        if (PropertyIds.Count > 0) return;
+        foreach (var pair in PropertyIdentifierSet.Instance.m_idToInfo)
+        {
+            PropertyIds.TryAdd(pair.Value.Name, pair.Key);
+            PropertyNamesById.TryAdd(pair.Key, pair.Value.Name);
+        }
+    }
 
     public static uint PropertyId(string name)
     {
         if (name.StartsWith("0x", StringComparison.OrdinalIgnoreCase) || uint.TryParse(name, out _)) return LiveTools.ParseId(name);
-        if (PropertyIds.Count == 0)
-            foreach (var pair in PropertyIdentifierSet.Instance.m_idToInfo) PropertyIds.TryAdd(pair.Value.Name, pair.Key);
+        EnsurePropertyMaps();
         return PropertyIds.TryGetValue(name, out var value) ? value : throw new ArgumentException("Unknown property: " + name);
+    }
+
+    public static string PropertyName(uint id)
+    {
+        EnsurePropertyMaps();
+        return PropertyNamesById.TryGetValue(id, out var name) ? name : $"0x{id:x8}";
     }
 
     public static object Registry(string kind, string filter)
@@ -88,7 +208,10 @@ public static class InternalCommands
         }
         if (!Enum.TryParse<InteropEventIDs>(eventName, out var eventId) || !Enum.IsDefined(typeof(InteropEventIDs), eventId)) throw new ArgumentException("Unknown game event.");
         var canonicalName = Enum.GetName(typeof(InteropEventIDs), eventId);
-        if (canonicalName.Contains("Debug", StringComparison.OrdinalIgnoreCase) || canonicalName.Contains("Cheat", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Not a player command.");
+        if (canonicalName.Contains("Debug", StringComparison.OrdinalIgnoreCase) || canonicalName.Contains("Cheat", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Not a player command.");
+        if (!AuthGuard.IsDevMode && !AllowedProductionEvents.Contains(canonicalName))
+            throw new UnauthorizedAccessException($"Event '{canonicalName}' is not in the production allowlist. Enable dev mode only for local diagnostics.");
         var target = string.IsNullOrEmpty(source) || source == "none" ? null : LiveTools.GetReference(source, path);
         using var document = JsonDocument.Parse(string.IsNullOrEmpty(payload) ? "null" : payload);
         var data = document.RootElement.ValueKind == JsonValueKind.Null ? null : Build(document.RootElement);
@@ -111,11 +234,18 @@ public static class InternalCommands
         using var document = JsonDocument.Parse(payload);
         var value = Build(document.RootElement);
         var snapshot = LiveTools.GetSnapshot(channel);
+        var propName = PropertyName(snapshot.Property);
+        if (!AuthGuard.IsDevMode && !AllowedProductionProperties.Contains(propName))
+            throw new UnauthorizedAccessException($"Property update '{propName}' is not in the production allowlist.");
+        // 防死锁守卫：球队尚未创建任何活跃战术时，TacticalStyleDropdown 值为 null，
+        // 向空战术派发 UpdateChannelData 会导致 FM27 原生 C++ 后端阻塞，必须在底层拒绝。
+        if (propName == "TacticalStyleDropdown" && (snapshot.Value == null || snapshot.Value.IsNull))
+            throw new InvalidOperationException("Cannot update TacticalStyleDropdown when no active tactic exists (current value is null). Create a tactic slot first.");
         var before = LiveTools.DescribeValue(snapshot.Value);
         var requested = LiveTools.DescribeValue(value);
         if (apply) LiveTools.UpdateProperty(channel, value);
         return new { ok = true, status = apply ? "dispatched_unverified" : "preview", verified = false,
-            before, requested, source = snapshot.Source, property = snapshot.Property, contexts = snapshot.Contexts };
+            before, requested, source = snapshot.Source, property = snapshot.Property, propertyName = propName, contexts = snapshot.Contexts };
     }
 
     public static object ContinueState()

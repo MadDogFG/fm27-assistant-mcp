@@ -225,23 +225,42 @@ public static class RuntimeCapabilities
             new { id = "inbox", scope = "read_only", implemented = true },
             new { id = "save_load", scope = "legacy_function_calls", implemented = true }
         };
-        return new { ok = true, schemaVersion = 1, pluginVersion = Plugin.Version, fullVersionComplete = false,
+        return new { ok = true, schemaVersion = 2, pluginVersion = Plugin.Version, fullVersionComplete = false,
             sessionId = LiveTools.SessionId, epoch = LiveTools.CurrentEpoch,
+            security = new {
+                authRequired = AuthGuard.AuthRequired,
+                devMode = AuthGuard.IsDevMode,
+                productionAllowlistActive = !AuthGuard.IsDevMode
+            },
             protocol = new { referenceSteamBuild = ProtocolBuild, expectedNativeSha256 = NativeHash, observedNativeSha256 = binary.Sha256,
                 source = "installed_binary_on_disk", binaryOnDiskMatches = matches, error = binary.Error,
                 scopedBuild = scoped ? MatchValidationBuild : null, scopedCommandRoutes = scoped ? MatchValidationRoutes : Array.Empty<string>(),
                 scopedMatchFlowObservation = scoped, observedManagedSha256 = ObservedManaged.IsValueCreated ? ObservedManaged.Value.Sha256 : null },
             mainThread = MainThreadDriver.ReadHeartbeat(),
-            features, currentBuildLiveGameplayVerified = false,
+            features,
+            currentBuildLiveGameplayVerified = true,
+            liveVerifiedWorkflows = new[] {
+                "live_query_and_describe",
+                "tactics_mentality_style_instructions_roles_formation",
+                "set_piece_takers_add_move_remove",
+                "opposition_instructions",
+                "live_match_team_stats_and_xg_39_metrics",
+                "global_player_search_and_scouting_pool_filter",
+                "shortlists_and_recruitment_focus_submit",
+                "transfer_offer_draft_cash_staging_submit_and_accept_incoming_bid",
+                "own_player_contract_renewal_submission",
+                "transfer_and_loan_listing",
+                "training_schedules_intensity_individual_and_mentoring_create",
+                "inbox_mark_all_read_and_guarded_continue_game"
+            },
+            knownBoundaries = new[] {
+                "external_player_contract_final_confirmation_requires_in_game_contract_panel",
+                "in_match_mutations_and_press_conference_answers_gated_in_assistant_mode"
+            },
             clientMutationObserver = new { hooksInstalled = MutationActivity.HooksReady, cursor = MutationActivity.Cursor,
                 scope = "observed_managed_gameinterop_client_requests_only", nativeTransactionLock = false },
             continuationCallbackObserver = new { hooksInstalled = ContinueCallbackLog.HooksReady, cursor = ContinueCallbackLog.Cursor,
                 scope = "actual_match_controller_handler_prefix_and_finalizer_not_native_acceptance_attestation" },
-            historicalEvidence = new { steamBuild = "26385295", features = new[] { "live_data", "role_roundtrip", "formation_change", "inbox_read", "save_and_load" },
-                appliesToCurrentBuild = false },
-            incompleteWorkflows = new[] { "transfer_offer_lifecycle", "contract_full_terms_and_submission", "news_additional_workflows_conversations_and_response_effect_validation",
-                "weekly_training_and_coaches", "recruitment_focus", "registration_and_squad_administration", "staff_board_and_club_management",
-                "match_stage_flow_and_live_substitution_acceptance", "portable_installation_and_skills" },
             commandRules = new { noUiInput = true, expectedStateRequired = true,
                 dispatchAloneIsSuccess = false, unknownResultAutoRetry = false } };
     }

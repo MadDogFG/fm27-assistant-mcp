@@ -12,8 +12,12 @@ import { fileURLToPath } from "node:url";
 import { createTacticTools } from "./tactic-tools.mjs";
 import { createInboxTools } from "./inbox-tools.mjs";
 import { createExtendedTools } from "./extended-tools.mjs";
-import { discoverTools, DOMAIN_META } from "./tool-catalog.mjs";
+import { discoverTools, DOMAIN_META, resolveToolMetadata } from "./tool-catalog.mjs";
 import { hexToAscii } from "./live-query-tools.mjs";
+import { createAuthTokenProvider } from "./core/auth.mjs";
+import { validateToolArgs } from "./core/schema-validator.mjs";
+import { enforceHardByteLimit } from "./core/response-limiter.mjs";
+import { createExecutionQueue } from "./core/execution-queue.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOG_FILE = process.env.FM_ASSISTANT_LOG_FILE || path.resolve(__dirname, "..", "logs", "mcp.log");
@@ -34,8 +38,12 @@ function writeMcpLog(level, message) {
 }
 
 const BASE = (process.env.FM_ASSISTANT_URL || "http://127.0.0.1:27190").replace(/\/+$/, "");
-const SERVER = { name: "fm27-assistant", version: "1.0.0" };
+const SERVER = { name: "fm27-assistant", version: "1.1.0" };
+const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const exposeAllTools = process.env.FM_ASSISTANT_EXPOSE_ALL_TOOLS === "1";
+const includeStructuredContent = process.env.FM_ASSISTANT_INCLUDE_STRUCTURED_CONTENT === "1";
+const assistantMode = String(process.env.FM_ASSISTANT_MODE || "assistant").toLowerCase();
+const authProvider = createAuthTokenProvider();
 const developmentTools = new Set([
   "log", "clear_log", "interop_events", "find_types", "find_methods", "nudge", "ui_panels", "ui_roots", "ui_scan", "ui_tree", "ui_find",
   "game_events", "replay", "block", "selftest", "patched_methods", "set_logging", "fm_assistant_bindings_get", "fm_assistant_bindings_makekey",
@@ -44,18 +52,29 @@ const developmentTools = new Set([
 ]);
 const developmentMode = process.env.FM_ASSISTANT_DEVELOPMENT_TOOLS === "1";
 
-async function call(path, { method = "GET", body = null, timeout = 8000 } = {}) {
+async function call(endpoint, { method = "GET", body = null, timeout = 8000 } = {}, retriedAuth = false) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(`${BASE}${path}`, {
+    const authHeaders = endpoint === "/health" ? {} : authProvider.getAuthHeaders(retriedAuth);
+    const headers = {
+      ...authHeaders,
+      ...(body != null ? { "Content-Type": "application/json" } : {})
+    };
+    const response = await fetch(`${BASE}${endpoint}`, {
       method,
       signal: controller.signal,
-      headers: body ? { "Content-Type": "application/json" } : undefined,
+      headers: Object.keys(headers).length ? headers : undefined,
       // 兼容已序列化的 JSON 字符串与原始对象，避免二次序列化导致原生字符串参数带外层双引号
       body: body != null ? (typeof body === "string" ? body : JSON.stringify(body)) : undefined,
     });
     const text = await response.text();
+    // 若插件重启轮换了本机会话密钥，遇到 401 自动从磁盘重读一次 session.token 并重试
+    if (response.status === 401 && !retriedAuth && endpoint !== "/health") {
+      authProvider.invalidate();
+      clearTimeout(timer);
+      return call(endpoint, { method, body, timeout }, true);
+    }
     if (!response.ok) {
       const error = new Error(`HTTP ${response.status}: ${text.slice(0, 300)}`);
       if (response.status === 504) {
@@ -70,7 +89,7 @@ async function call(path, { method = "GET", body = null, timeout = 8000 } = {}) 
       return text;
     }
   } catch (error) {
-    if (error?.name === "AbortError") throw new Error(`FM 助教接口超时（${path}）`);
+    if (error?.name === "AbortError") throw new Error(`FM 助教接口超时（${endpoint}）`);
     if (String(error?.cause?.code) === "ECONNREFUSED" || /fetch failed/.test(String(error?.message))) {
       throw new Error(
         "连不上 FM 助教插件（127.0.0.1:27190）。请确认：1) FM27 正在运行；2) 插件已安装到 BepInEx\\plugins\\FMAssistant 并加载；3) 游戏已重启过一次。"
@@ -252,13 +271,20 @@ const tools = [
 const tacticTools = createTacticTools(call);
 const readInbox = createInboxTools(call);
 const extended = createExtendedTools(call);
-const excludedTools = new Set([
-  "answer_press_conference_question", "get_communication_actions", "execute_communication_action",
-  "get_conversation_replies", "reply_to_conversation",
+// 默认安全助教模式下屏蔽比赛临场写操作与谈话/发布会代答；显式设置 FM_ASSISTANT_MODE=autonomous 时可放开比赛指挥工具
+const matchAutonomousTools = new Set([
   "submit_match_lineup", "continue_match_stage", "get_match_shout_recipients", "select_match_shout_recipients",
   "get_match_shouts", "execute_match_shout", "preview_match_team_talk_recipients", "select_match_team_talk_recipients",
   "get_match_team_talk_actions", "execute_match_team_talk_action", "preview_match_substitution", "execute_match_substitution",
   "resume_match_substitution", "set_match_playing", "begin_match_changes", "confirm_match_changes", "cancel_match_changes",
+]);
+const conversationGatedTools = new Set([
+  "answer_press_conference_question", "get_communication_actions", "execute_communication_action",
+  "get_conversation_replies", "reply_to_conversation",
+]);
+const excludedTools = new Set([
+  ...conversationGatedTools,
+  ...(assistantMode === "autonomous" ? [] : matchAutonomousTools),
 ]);
 tools.push(...extended.tools.filter(tool => !excludedTools.has(tool.name)));
 tools.push(
@@ -307,20 +333,20 @@ function replyError(id, code, message) {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
-// 进程内写命令串行队列，避免 Agent 并发发送多个写操作时相互竞争导致 unverified_timeout
-let writeQueue = Promise.resolve();
-function isReadOnlyTool(name) {
-  return /^(get_|list_|read_|preview_|compare_|live_describe|live_query|live_properties|live_read|plugin_health|fm_discover|operation_status|fm_assistant_bindings_)/i.test(name || "");
-}
-function runSerializedIfWrite(name, fn) {
-  if (isReadOnlyTool(name)) return fn();
-  const next = writeQueue.then(fn, fn);
-  writeQueue = next.catch(() => {});
-  return next;
-}
+// 读写分离并发调度器：只读查询（含 plugin_health/fm_discover）可并发响应，写操作与共享可变状态工具（如 search_players）严格串行
+const executionQueue = createExecutionQueue();
+const toolRegistryMap = new Map(tools.map(t => [t.name, t]));
 
 async function callTool(name, args) {
-  return runSerializedIfWrite(name, async () => callToolImpl(name, args));
+  const toolDef = toolRegistryMap.get(name);
+  if (toolDef?.inputSchema) {
+    const validation = validateToolArgs(toolDef.inputSchema, args);
+    if (!validation.ok) {
+      throw new Error(`参数校验失败（${name}）：${validation.errors.join("；")}`);
+    }
+  }
+  const meta = resolveToolMetadata(toolDef || name);
+  return executionQueue.run(meta, async () => callToolImpl(name, args));
 }
 
 const COMPACTABLE_HEAVY_TOOLS = new Set(["get_tactic_analysis", "get_datahub_analysis", "get_past_match_report", "get_set_piece_takers", "list_job_adverts"]);
@@ -589,46 +615,11 @@ function sanitizePayload(value) {
   return value;
 }
 
-const MAX_PAYLOAD_CHARS = 160000; // 约 5 万 Token 安全上限（~160KB），避免误伤正常大名单/全赛季统计，同时拦截恶意膨胀
-
-function trimOversizedArrays(node, maxItems = 50, maxDepth = 6, depth = 0) {
-  if (depth > maxDepth) {
-    if (node && typeof node === "object") return "[嵌套过深已折叠，请传特定路径或分页查询]";
-    return node;
+function negotiateProtocolVersion(requested) {
+  if (typeof requested === "string" && SUPPORTED_PROTOCOL_VERSIONS.includes(requested)) {
+    return requested;
   }
-  if (Array.isArray(node)) {
-    const trimmed = node.slice(0, maxItems).map(item => trimOversizedArrays(item, maxItems, maxDepth, depth + 1));
-    if (node.length > maxItems) {
-      return {
-        _truncated: true,
-        _originalCount: node.length,
-        _keptCount: maxItems,
-        _note: "响应超过 ~5 万 Token 安全阈值，已自动截断超长数组；请使用分页参数（offset/limit）或缩小查询范围。",
-        items: trimmed
-      };
-    }
-    return trimmed;
-  }
-  if (node && typeof node === "object") {
-    const out = {};
-    for (const [k, v] of Object.entries(node)) out[k] = trimOversizedArrays(v, maxItems, maxDepth, depth + 1);
-    return out;
-  }
-  return node;
-}
-
-function guardPayloadSize(obj) {
-  const json = JSON.stringify(obj);
-  if (json.length <= MAX_PAYLOAD_CHARS) return obj;
-  let guarded = trimOversizedArrays(obj, 50, 6);
-  if (JSON.stringify(guarded).length > MAX_PAYLOAD_CHARS) {
-    guarded = trimOversizedArrays(obj, 20, 4);
-  }
-  if (guarded && typeof guarded === "object" && !Array.isArray(guarded)) {
-    guarded._payloadGuarded = true;
-    guarded._originalBytes = json.length;
-  }
-  return guarded;
+  return SUPPORTED_PROTOCOL_VERSIONS[0];
 }
 
 async function handleMessage(message) {
@@ -638,7 +629,7 @@ async function handleMessage(message) {
 
   if (method === "initialize") {
     reply(id, {
-      protocolVersion: params?.protocolVersion || "2025-06-18",
+      protocolVersion: negotiateProtocolVersion(params?.protocolVersion),
       capabilities: { tools: { listChanged: false } },
       serverInfo: SERVER,
       instructions: INSTRUCTIONS,
@@ -667,7 +658,9 @@ async function handleMessage(message) {
         const publicTools = tools.filter(tool => developmentMode || !developmentTools.has(tool.name));
         result = discoverTools(publicTools, toolArgs);
       } else if (toolName === "fm_call") {
-        if (!toolArgs.action) throw new Error("必须提供 action 参数（目标工具名）。");
+        if (!toolArgs.action || typeof toolArgs.action !== "string") {
+          throw new Error("必须提供字符串类型的 action 参数（目标工具名）。");
+        }
         result = await callTool(toolArgs.action, toolArgs.params || {});
       } else if (toolName === "fm_continue_game") {
         const mode = String(toolArgs.action || "read").toLowerCase();
@@ -698,12 +691,16 @@ async function handleMessage(message) {
       } else {
         result = await callTool(toolName, toolArgs);
       }
-      const cleanResult = guardPayloadSize(sanitizePayload(result));
-      const payloadText = JSON.stringify(cleanResult, null, 2);
+      const sanitized = sanitizePayload(result);
+      const limited = enforceHardByteLimit(sanitized);
       const elapsed = Date.now() - t0;
       const paramSummary = JSON.stringify(targetParams).slice(0, 200);
-      writeMcpLog(cleanResult?.ok === false ? "WARN" : "INFO", `${targetAction} (${elapsed}ms, bytes=${payloadText.length}) args=${paramSummary}`);
-      reply(id, { content: [{ type: "text", text: payloadText }], structuredContent: cleanResult, ...(cleanResult?.ok === false ? { isError: true } : {}) });
+      writeMcpLog(limited.data?.ok === false ? "WARN" : "INFO", `${targetAction} (${elapsed}ms, bytes=${limited.bytes}${limited.truncated ? ",truncated" : ""}) args=${paramSummary}`);
+      reply(id, {
+        content: [{ type: "text", text: limited.text }],
+        ...(includeStructuredContent ? { structuredContent: limited.data } : {}),
+        ...(limited.data?.ok === false ? { isError: true } : {})
+      });
     } catch (error) {
       const elapsed = Date.now() - t0;
       const errMsg = error?.message || String(error);
@@ -716,7 +713,7 @@ async function handleMessage(message) {
 }
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-let chain = Promise.resolve();
+const inFlight = new Set();
 rl.on("line", (line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -726,10 +723,16 @@ rl.on("line", (line) => {
   } catch {
     return;
   }
-  chain = chain.then(() => handleMessage(message)).catch((error) => {
-    process.stderr.write(`fm-assistant-mcp error: ${error?.stack || error}\n`);
-  });
+  // 读写并发入口：不再用全局单 Promise 串死 ping/health/只读查询，写操作由 executionQueue 严格串行保序
+  const task = handleMessage(message)
+    .catch((error) => {
+      process.stderr.write(`fm-assistant-mcp error: ${error?.stack || error}\n`);
+    })
+    .finally(() => {
+      inFlight.delete(task);
+    });
+  inFlight.add(task);
 });
 rl.on("close", () => {
-  chain.finally(() => process.exit(0));
+  Promise.allSettled([...inFlight]).finally(() => process.exit(0));
 });

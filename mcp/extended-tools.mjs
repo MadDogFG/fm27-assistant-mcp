@@ -44,6 +44,8 @@ import { createCaptaincyStandinTools } from "./captaincy-standin-tools.mjs";
 import { createCodeOfConductTools } from "./code-of-conduct-tools.mjs";
 import { createBudgetAdjustmentTools } from "./budget-adjustment-tools.mjs";
 import { createSquadSnapshotTools } from "./squad-snapshot-tools.mjs";
+import { createBestXiTools } from "./algorithms/best-xi.mjs";
+import { createSquadAuditTools } from "./algorithms/squad-audit.mjs";
 import { createLiveQueryTools } from "./live-query-tools.mjs";
 import { createPlayerAttributesTools } from "./player-attributes-tools.mjs";
 import { createTeamSelectionTools } from "./team-selection-tools.mjs";
@@ -129,6 +131,8 @@ export function createExtendedTools(call) {
   const compAwards = createCompetitionsAndAwardsTools(call);
   const playerComparison = createPlayerComparisonTools(call);
   const squadSnapshot = createSquadSnapshotTools(call);
+  const bestXi = createBestXiTools(call);
+  const squadAudit = createSquadAuditTools(call);
   const liveQuery = createLiveQueryTools(call);
   const playerAttrs = createPlayerAttributesTools(call);
   const datahubTr = createDatahubAndTransferRoomTools(call);
@@ -623,7 +627,18 @@ export function createExtendedTools(call) {
     ["manage_news_follow", "关注或取消关注指定球队、赛事或新闻来源（MGR-O23a/c）。", { targetType: { type: "string", enum: ["club", "competition", "media_source"], default: "club" }, targetIndex: { type: "integer", minimum: 0, default: 0 }, follow: { type: "boolean", default: true }, operationId: text }, [], managerCareer.manageNewsFollow],
     ["manage_inbox_message_flags", "管理收件箱消息标记：重要/保留/设置提醒/归档（MGR-O04a/b/c/d）。", { index: { type: "integer", minimum: 0, default: 0 }, flag: { type: "string", enum: ["important", "keep", "reminder", "archive"], default: "important" }, value: { type: "boolean", default: true }, reminderDays: { type: "integer", minimum: 1, default: 1 }, operationId: text }, [], inboxFlagsPromises.manageInboxMessageFlags],
     ["submit_message_typed_input", "执行带日期或数值输入的交互消息待办（MGR-O06c/d）。", { index: { type: "integer", minimum: 0, default: 0 }, inputKind: { type: "string", enum: ["date", "numeric"], default: "numeric" }, numericValue: { type: "number" }, dateText: text, operationId: text }, [], inboxFlagsPromises.submitMessageTypedInput],
-    ["manage_promise_or_happiness", "处理承诺履约问题或后续跟进对话（MGR-O12a/c）。", { action: { type: "string", enum: ["resolve", "follow_up"], default: "resolve" }, promiseIndex: { type: "integer", minimum: 0, default: 0 }, squadIndex: { type: "integer", minimum: 0, default: 0 }, operationId: text }, [], inboxFlagsPromises.managePromiseOrHappiness]
+    ["manage_promise_or_happiness", "处理承诺履约问题或后续跟进对话（MGR-O12a/c）。", { action: { type: "string", enum: ["resolve", "follow_up"], default: "resolve" }, promiseIndex: { type: "integer", minimum: 0, default: 0 }, squadIndex: { type: "integer", minimum: 0, default: 0 }, operationId: text }, [], inboxFlagsPromises.managePromiseOrHappiness],
+    ["optimize_best_xi", "确定性最优首发 11 人与 7 人替补席排阵算法（精确匈牙利最大权匹配，杜绝一人两用）：综合位置熟练度、体能、伤停、薪资层级与可选青训倾斜，毫秒级输出最佳首发与客串预警，大幅节省 Token。", {
+      formation: { type: "string", enum: ["4-2-3-1", "4-3-3", "4-4-2", "3-5-2", "3-4-2-1", "4-1-4-1", "5-3-2", "4-4-2-diamond"], description: "阵型模板（不传则自动读取当前球队持球阵型）" },
+      slots: { type: "array", items: text, minItems: 11, maxItems: 11, description: "自定义 11 槽位数组（如 ['GK','DR','DC',...]）" },
+      minCondition: { type: "integer", minimum: 40, maximum: 100, default: 72, description: "健康体能门槛，低于此值强扣分促轮换" },
+      preferYouth: { type: "boolean", default: false, description: "杯赛/练兵模式：为 U21/U23 小妖额外加分" },
+      excludeIndices: { type: "array", items: { type: "integer", minimum: 0 }, uniqueItems: true, description: "手动排除轮休的 squadIndex 列表" }
+    }, [], bestXi.optimizeBestXi],
+    ["audit_squad_and_contracts", "确定性一线队体检算法：一键统计 6 大位置线深度缺口与冗员、年龄结构、体能/锐度异常、30+ 高薪老将与青训苗子，直接给出可执行引援/清洗/轮换建议。", {
+      lowConditionThreshold: { type: "integer", minimum: 50, maximum: 95, default: 80 },
+      lowSharpnessThreshold: { type: "integer", minimum: 40, maximum: 90, default: 65 }
+    }, [], squadAudit.auditSquadAndContracts]
   ];
   return { tools: definitions.map(([name, description, properties, required]) => ({ name,
     description: experimental + description, inputSchema: schema(properties, required) })),

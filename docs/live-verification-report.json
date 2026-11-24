@@ -1,0 +1,113 @@
+{
+  "generatedAt": "2026-11-24T11:28:57.067Z",
+  "total": 11,
+  "passed": 11,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "01_health_public_accessible",
+      "passed": true,
+      "durationMs": 21,
+      "detail": {
+        "version": "1.0.0",
+        "authRequired": true,
+        "devMode": false
+      }
+    },
+    {
+      "name": "02_security_unauthenticated_401",
+      "passed": true,
+      "durationMs": 2,
+      "detail": {
+        "status": 401
+      }
+    },
+    {
+      "name": "03_security_authenticated_capabilities",
+      "passed": true,
+      "durationMs": 2,
+      "detail": {
+        "schemaVersion": 2,
+        "devMode": false,
+        "liveVerified": true
+      }
+    },
+    {
+      "name": "04_security_production_blocks_diag_and_non_allowlist_event",
+      "passed": true,
+      "durationMs": 11,
+      "detail": {
+        "diagStatus": 403,
+        "blockedEventStatus": 400
+      }
+    },
+    {
+      "name": "05_readonly_briefing_and_table",
+      "passed": true,
+      "durationMs": 7483,
+      "detail": {
+        "briefingBytes": 1087,
+        "tableOk": true
+      }
+    },
+    {
+      "name": "06_algorithm_optimize_best_xi",
+      "passed": true,
+      "durationMs": 30705,
+      "detail": {
+        "formation": "4-2-3-1",
+        "totalScore": 1051.63,
+        "benchCount": 7
+      }
+    },
+    {
+      "name": "07_algorithm_audit_squad_and_contracts",
+      "passed": true,
+      "durationMs": 30533,
+      "detail": {
+        "squadSize": 30,
+        "shortages": 1,
+        "bloated": 2
+      }
+    },
+    {
+      "name": "08_search_players_global_and_empty_guard",
+      "passed": true,
+      "durationMs": 1999,
+      "detail": {
+        "hitName": "荒木鲁伊",
+        "missCount": 0
+      }
+    },
+    {
+      "name": "09_tactical_style_guard_or_roundtrip",
+      "passed": true,
+      "durationMs": 1200,
+      "detail": {
+        "mode": "empty_tactic_deadlock_guard",
+        "jsBlockedReason": "no_active_tactic",
+        "csharpGuardStatus": 400,
+        "csharpGuardError": "Cannot update TacticalStyleDropdown when no active tactic exists (current value is null). Create a tactic slot first."
+      }
+    },
+    {
+      "name": "10_set_piece_takers_default_attacking_read",
+      "passed": true,
+      "durationMs": 817,
+      "detail": {
+        "takersCount": 0
+      }
+    },
+    {
+      "name": "11_news_read_state_reversible_roundtrip",
+      "passed": true,
+      "durationMs": 2950,
+      "detail": {
+        "title": "之后几周的训练日程",
+        "origIsRead": true,
+        "flipped": false,
+        "verifiedRoundtrip": true
+      }
+    }
+  ]
+}
