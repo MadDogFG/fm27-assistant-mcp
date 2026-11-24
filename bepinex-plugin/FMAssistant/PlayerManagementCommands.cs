@@ -20,6 +20,8 @@ public static class PlayerManagementCommands
         (uint)ActionID.PersonStopScoutPlayersClub,
         (uint)ActionID.PersonKeepScoutReport,
         (uint)ActionID.PersonDiscardScoutReport,
+        (uint)ActionID.PersonAddPlayersToShortlist,
+        (uint)ActionID.PersonRemovePlayersFromShortlist,
         (uint)ActionID.PersonAddNonPlayersToShortlist,
         (uint)ActionID.PersonRemoveNonPlayersFromShortlist,
         (uint)ActionID.PersonMoveToClubShortlistPlayer,

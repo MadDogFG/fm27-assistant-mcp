@@ -296,3 +296,147 @@ test("MCP stdio：未载入存档（no_active_save）返回友好中文提示与
     mockServer.close();
   }
 });
+
+test("add_player_to_shortlist：全库搜人并精准定位目标候选名单与无限期叶节点执行", async () => {
+  // 确认 C# 侧已开放玩家短名单增删 ActionID
+  const pmCs = fs.readFileSync(path.join(ROOT, "bepinex-plugin", "FMAssistant", "PlayerManagementCommands.cs"), "utf8");
+  assert.match(pmCs, /ActionID\.PersonAddPlayersToShortlist/);
+  assert.match(pmCs, /ActionID\.PersonRemovePlayersFromShortlist/);
+
+  const { createShortlistManagementTools } = await import("../../mcp/shortlist-management-tools.mjs");
+  let seq = 0;
+  let executedEntry = null;
+  let listAdded = false;
+  const handleValues = new Map();
+  const propIds = {
+    Text: 101,
+    Event: 102,
+    Disabled: 103,
+    RowData: 104,
+    ChildList: 105,
+    ActionData: 106
+  };
+  const hex = id => `0x${id.toString(16).padStart(8, "0")}`;
+
+  const mockCall = async (route, opts = {}) => {
+    const [pathname, qs = ""] = route.split("?");
+    const q = new URLSearchParams(qs);
+    if (pathname === "/api/v1/internal/registry") {
+      const f = q.get("filter");
+      return { ok: true, items: [{ name: f, id: propIds[f] }] };
+    }
+    if (pathname === "/api/v1/live/properties") {
+      const f = q.get("filter") || "";
+      return { ok: true, properties: [{ id: ++seq, name: `${f}:mock`, contexts: [] }] };
+    }
+    if (pathname === "/api/v1/live/open") {
+      const handle = `h_${++seq}`;
+      const src = q.get("source");
+      const pathArg = q.get("path") || "";
+      // 通过最近一次 properties 名称推断返回体
+      if (src === "human" && handleValues.size === 0) {
+        handleValues.set(handle, { kind: "reference", type: "FM.UI.TeamReference" });
+      } else if (src === "human" && !handleValues.has("__sl_done")) {
+        handleValues.set("__sl_done", true);
+        handleValues.set(handle, {
+          kind: "list",
+          count: 2,
+          items: [
+            { fields: { "0x696e6478": { value: "0" }, "0x5374726e": { value: "U21速度体力引援" }, "0x696d5856": { value: listAdded ? "1 名球员" : "0 名球员" } } },
+            { fields: { "0x696e6478": { value: "1" }, "0x5374726e": { value: "外援平替即战力" }, "0x696d5856": { value: "0 名球员" } } }
+          ]
+        });
+      } else if (src === "game" && !handleValues.has("__gs_done")) {
+        handleValues.set("__gs_done", true);
+        handleValues.set(handle, { kind: "reference", type: "FM.UI.SearchReference" });
+      } else if (!handleValues.has("__search_name")) {
+        handleValues.set("__search_name", handle);
+        handleValues.set(handle, { kind: "scalar", value: "" });
+      } else if (!handleValues.has("__search_list")) {
+        handleValues.set("__search_list", handle);
+        handleValues.set(handle, { kind: "list", count: 1, items: [{ identity: "p_zhang_001" }] });
+      } else if (!handleValues.has("__search_done")) {
+        handleValues.set("__search_done", handle);
+        handleValues.set(handle, { kind: "scalar", value: "True" });
+      } else if (pathArg === "0") {
+        handleValues.set(handle, { kind: "reference", type: "FM.UI.PersonReference", identity: "p_zhang_001" });
+      } else if (!handleValues.has("__player_name")) {
+        handleValues.set("__player_name", handle);
+        handleValues.set(handle, { kind: "scalar", value: "张瑷晖" });
+      } else if (src === "game" && !handleValues.has("__actions")) {
+        handleValues.set("__actions", handle);
+        handleValues.set(handle, { kind: "record", fields: {} });
+      } else if (src === "game" && !handleValues.has("__action_ref")) {
+        handleValues.set("__action_ref", handle);
+        handleValues.set(handle, { kind: "reference", type: "FM.UI.ActionReference" });
+      } else if (!handleValues.has("__menu_items")) {
+        handleValues.set("__menu_items", handle);
+        const makeLeaf = text => ({
+          fields: {
+            [hex(propIds.Text)]: { kind: "scalar", value: text },
+            [hex(propIds.Event)]: { kind: "scalar", value: "44" },
+            [hex(propIds.ActionData)]: { kind: "record", fields: {} }
+          }
+        });
+        handleValues.set(handle, {
+          kind: "list",
+          items: [
+            {
+              fields: {
+                [hex(propIds.Text)]: { kind: "scalar", value: "U21速度体力引援" },
+                [hex(propIds.ChildList)]: { kind: "list", items: [makeLeaf("1个月"), makeLeaf("无限期")] }
+              }
+            },
+            {
+              fields: {
+                [hex(propIds.Text)]: { kind: "scalar", value: "外援平替即战力" },
+                [hex(propIds.ChildList)]: { kind: "list", items: [makeLeaf("无限期")] }
+              }
+            }
+          ]
+        });
+      } else {
+        // 执行后重读 readShortlists
+        handleValues.set(handle, {
+          kind: "list",
+          count: 2,
+          items: [
+            { fields: { "0x696e6478": { value: "0" }, "0x5374726e": { value: "U21速度体力引援" }, "0x696d5856": { value: "1 名球员" } } },
+            { fields: { "0x696e6478": { value: "1" }, "0x5374726e": { value: "外援平替即战力" }, "0x696d5856": { value: "0 名球员" } } }
+          ]
+        });
+      }
+      return { ok: true, handle, reference: { type: "MockRef" } };
+    }
+    if (pathname === "/api/v1/live/read") {
+      return { ok: true, status: "ready", value: handleValues.get(q.get("handle")) ?? null };
+    }
+    if (pathname === "/api/v1/live/close" || pathname === "/api/v1/internal/update") {
+      return { ok: true };
+    }
+    if (pathname === "/api/v1/player-management/available") {
+      return { ok: true, actions: [{ id: "1001", name: "PersonAddPlayersToShortlist" }] };
+    }
+    if (pathname === "/api/v1/player-management/preview") {
+      return { ok: true, choiceToken: "tok_sl_01", disabled: false, silentExecutionImplemented: true };
+    }
+    if (pathname === "/api/v1/player-management/execute") {
+      executedEntry = JSON.parse(q.get("entry"));
+      listAdded = true;
+      return { ok: true, status: "dispatched_unverified" };
+    }
+    throw new Error(`未预期路由: ${route}`);
+  };
+
+  const tools = createShortlistManagementTools(mockCall);
+  const res = await tools.addPlayerToShortlist({
+    playerName: "张瑷晖",
+    shortlistName: "U21速度体力引援",
+    duration: "无限期"
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.player.name, "张瑷晖");
+  assert.deepEqual(executedEntry, [0, 1], "应精准定位 U21速度体力引援 > 无限期 叶节点");
+  assert.equal(res.selectedPath, "U21速度体力引援 > 无限期");
+  assert.equal(res.afterShortlists[0].countText, "1 名球员");
+});

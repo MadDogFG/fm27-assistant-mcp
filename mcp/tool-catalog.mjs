@@ -47,6 +47,8 @@ export const EXPLICIT_TOOL_METADATA = {
   execute_negotiation_action: { domain: "recruitment", readOnly: false, exclusiveState: true, riskLevel: "high", requiresOutOfMatch: true },
   respond_transfer_activity_offer: { domain: "recruitment", readOnly: false, exclusiveState: true, riskLevel: "high", requiresOutOfMatch: true },
   delete_shortlist: { domain: "recruitment", readOnly: false, exclusiveState: true, riskLevel: "high", requiresOutOfMatch: false },
+  add_player_to_shortlist: { domain: "recruitment", readOnly: false, exclusiveState: true, riskLevel: "medium", requiresOutOfMatch: false },
+  remove_player_from_shortlist: { domain: "recruitment", readOnly: false, exclusiveState: true, riskLevel: "medium", requiresOutOfMatch: false },
   manage_tactic_slot: { domain: "tactics", readOnly: false, exclusiveState: true, riskLevel: "high", requiresOutOfMatch: false },
   change_recruitment_focus_lifecycle: { domain: "recruitment", readOnly: false, exclusiveState: true, riskLevel: "high", requiresOutOfMatch: true },
   manage_manager_career: { domain: "manager", readOnly: false, exclusiveState: true, riskLevel: "high", requiresOutOfMatch: true },

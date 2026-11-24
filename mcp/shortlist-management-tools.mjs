@@ -1,6 +1,8 @@
-import { createLiveClient, clean } from "./live-client.mjs";
+import { createLiveClient, scalar, clean } from "./live-client.mjs";
 
-// 球探短名单列表读取与新建/选中/重命名/删除管理工具组（REC-O09）
+const stripRichText = v => clean(v).replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+
+// 球探短名单列表读取、新建/重命名/删除以及外部球员加入/移出候选名单工具组（REC-O09 / REC-O10）
 export function createShortlistManagementTools(call) {
   const client = createLiveClient(call);
 
@@ -19,7 +21,126 @@ export function createShortlistManagementTools(call) {
         isActive: f["0x69734163"]?.value === "True" || true,
       };
     });
-    return { count: sl.read?.value?.count ?? items.length, items, ctx };
+    return { count: sl.read?.value?.count ?? items.length, items, ctx, team };
+  }
+
+  // 通过全库原生 game.Search 按姓名定位外部球员，返回持有 FM.UI.PersonReference 的句柄与基本信息
+  async function resolveExternalPlayerByName(scope, { playerName, personIdentity = "", club = "" }) {
+    const queryName = stripRichText(playerName);
+    if (!queryName) throw new Error("必须提供球员姓名 playerName。");
+    const gs = await scope.subscribeOptional("game", "Search", { human: { source: "human" } }, 1500);
+    if (!gs.handle) throw new Error("游戏全局搜索通道暂未就绪。");
+    const sName = await scope.subscribeOptional(gs.handle, "Name", {}, 800);
+    const sList = await scope.subscribeOptional(gs.handle, "PersonList", {}, 800);
+    if (!sName.handle || !sList.handle) throw new Error("游戏搜索输入框或结果列表不可用。");
+    const sDone = await scope.subscribeOptional(gs.handle, "SearchIsFinished", {}, 600);
+    const beforeFirstId = (await scope.ready(sList.handle)).value?.items?.[0]?.identity || "";
+
+    await call(`/api/v1/internal/update?handle=${encodeURIComponent(sName.handle)}&apply=true`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(queryName)
+    });
+
+    let listVal = null;
+    for (let attempt = 0; attempt < 7; attempt++) {
+      await new Promise(r => setTimeout(r, attempt === 0 ? 450 : 200));
+      listVal = (await scope.ready(sList.handle)).value;
+      const doneVal = sDone.handle ? String(scalar((await scope.ready(sDone.handle)).value) ?? "") : "True";
+      const curFirstId = listVal?.items?.[0]?.identity || "";
+      if (doneVal.toLowerCase() === "true" && (curFirstId !== beforeFirstId || attempt >= 2)) break;
+    }
+    if (sDone.handle) await scope.release(sDone.handle).catch(() => {});
+
+    const totalHits = listVal?.count || 0;
+    if (totalHits === 0) throw new Error(`全库未搜到名为 "${queryName}" 的球员。`);
+
+    const clubQ = stripRichText(club).toLowerCase();
+    const maxScan = Math.min(totalHits, 12);
+    let fallbackMatch = null;
+    for (let i = 0; i < maxScan; i++) {
+      const rowSub = await scope.subscribeOptional({ source: sList.handle, path: String(i) }, "RowData", { human: { source: "human" } }, 700);
+      if (!rowSub.handle || rowSub.read?.value?.type !== "FM.UI.PersonReference") {
+        if (rowSub.handle) await scope.release(rowSub.handle).catch(() => {});
+        continue;
+      }
+      const identity = rowSub.read?.value?.identity || "";
+      const nameR = await scope.readAndRelease({ source: rowSub.handle }, "Name", { human: { source: "human" } }, 600);
+      const pName = stripRichText(nameR.scalar || "");
+      let pClub = "";
+      if (clubQ) {
+        const clubSub = await scope.subscribeOptional({ source: rowSub.handle }, "Club", { human: { source: "human" } }, 500);
+        if (clubSub.handle && clubSub.read?.value?.type !== "SI.Bindable.NullReference") {
+          const cn = await scope.readAndRelease(clubSub.handle, "Name", { human: { source: "human" } }, 500);
+          pClub = stripRichText(cn.scalar || "");
+        }
+        if (clubSub.handle) await scope.release(clubSub.handle).catch(() => {});
+      }
+
+      const exactIdentity = personIdentity && identity === personIdentity;
+      const clubMatched = !clubQ || pClub.toLowerCase().includes(clubQ);
+      if (exactIdentity || (!personIdentity && clubMatched && pName)) {
+        if (fallbackMatch) await scope.release(fallbackMatch.handle).catch(() => {});
+        return { handle: rowSub.handle, identity, name: pName || queryName, club: pClub || null };
+      }
+      if (!fallbackMatch && !personIdentity && !clubQ) {
+        fallbackMatch = { handle: rowSub.handle, identity, name: pName || queryName, club: pClub || null };
+      } else {
+        await scope.release(rowSub.handle).catch(() => {});
+      }
+    }
+
+    if (fallbackMatch) return fallbackMatch;
+    throw new Error(`未匹配到符合条件的球员 "${queryName}"${club ? `（俱乐部筛选：${club}）` : ""}${personIdentity ? `（身份：${personIdentity}）` : ""}。`);
+  }
+
+  // 展平原生 DoAction 菜单树，同时保留每条路径上每一级的完整中文标签
+  async function flattenActionMenu(scope, itemsValue) {
+    const keys = Object.fromEntries(
+      await Promise.all(["Text", "Event", "Disabled", "RowData", "ChildList", "ActionData"].map(async name => [name, await scope.propertyId(name)]))
+    );
+    const entries = [];
+    function visit(list, path = [], labels = [], disabled = false) {
+      if (list?.kind !== "list") return;
+      for (const [index, outer] of (list.items || []).entries()) {
+        const fields = (outer?.fields?.[keys.RowData] || outer)?.fields || {};
+        const blocked = disabled || scalar(outer?.fields?.[keys.Disabled]) === "True" || scalar(fields[keys.Disabled]) === "True";
+        const label = stripRichText(scalar(fields[keys.Text]) ?? scalar(outer?.fields?.[keys.Text]) ?? "");
+        const entry = [...path, index];
+        const pathLabels = label ? [...labels, label] : [...labels];
+        const childList = outer?.fields?.[keys.ChildList] || fields[keys.ChildList];
+        const hasChildren = childList?.kind === "list" && (childList.items?.length || 0) > 0;
+        const executableLeaf = !hasChildren && scalar(fields[keys.Event]) === "44" && Boolean(fields[keys.ActionData]);
+        entries.push({ entry, label, pathLabels, fullPath: pathLabels.join(" > "), disabled: blocked, executableLeaf });
+        visit(childList, entry, pathLabels, blocked);
+      }
+    }
+    visit(itemsValue);
+    return entries;
+  }
+
+  // 根据目标候选名单名与关注时长从菜单树叶节点中精准挑出目标项
+  function pickShortlistMenuLeaf(entries, { targetListName = "", duration = "" } = {}) {
+    const leaves = entries.filter(e => e.executableLeaf && !e.disabled);
+    if (!leaves.length) return null;
+
+    let pool = leaves;
+    const listQ = stripRichText(targetListName).toLowerCase();
+    if (listQ) {
+      const exactList = leaves.filter(e => e.pathLabels.some(l => l.toLowerCase() === listQ));
+      const fuzzyList = exactList.length ? exactList : leaves.filter(e => e.fullPath.toLowerCase().includes(listQ));
+      if (fuzzyList.length) pool = fuzzyList;
+      else return null;
+    }
+
+    const durQ = stripRichText(duration).toLowerCase();
+    if (durQ) {
+      const durHit = pool.find(e => e.fullPath.toLowerCase().includes(durQ));
+      if (durHit) return durHit;
+    }
+    // 默认优先选择“无限期 / Indefinitely”叶节点，其次选池中首个叶节点
+    const indefinite = pool.find(e => /无限期|永久|indefinite/i.test(e.fullPath));
+    return indefinite || pool[0];
   }
 
   async function listShortlists() {
@@ -142,5 +263,177 @@ export function createShortlistManagementTools(call) {
     });
   }
 
-  return { listShortlists, createShortlist, renameShortlist, deleteShortlist, movePlayerBetweenShortlists };
+  // 将外部搜索到的球员直接加入指定候选名单（支持按名称/索引选名单与时长，走游戏原生 PersonAddPlayersToShortlist 菜单叶节点）
+  async function addPlayerToShortlist({
+    playerName,
+    personIdentity = "",
+    club = "",
+    shortlistName = "",
+    shortlistIndex,
+    duration = "无限期",
+    previewOnly = false,
+    operationId
+  } = {}) {
+    if (!stripRichText(playerName)) throw new Error("必须提供球员姓名 playerName。");
+    const id = operationId || `shortlist_add_${Date.now()}`;
+    return client.scope(async scope => {
+      const before = await readShortlists(scope);
+      let targetListName = stripRichText(shortlistName);
+      if (!targetListName && Number.isInteger(shortlistIndex)) {
+        const matchedList = before.items.find(x => x.index === shortlistIndex || x.position === shortlistIndex);
+        if (!matchedList) throw new Error(`未找到 index=${shortlistIndex} 的候选名单（当前共 ${before.count} 个）。`);
+        targetListName = matchedList.name;
+      }
+
+      const player = await resolveExternalPlayerByName(scope, { playerName, personIdentity, club });
+      const contexts = {
+        human: { source: "human" },
+        Human: { source: "human" },
+        team: { source: before.team.handle },
+        Team: { source: before.team.handle },
+        Records: [{ $reference: { source: player.handle, path: "" } }]
+      };
+      const offered = await scope.subscribe("game", "Actions", contexts);
+      const available = await scope.api("/api/v1/player-management/available", { offered: offered.handle });
+
+      // 优先使用 PersonAddPlayersToShortlist；若球员已在其他候选名单中且指定了目标名单，可自动回退到 PersonMoveToClubShortlistPlayer
+      let chosen = available.actions?.find(a => a.name === "PersonAddPlayersToShortlist");
+      let usedActionName = "PersonAddPlayersToShortlist";
+      if (!chosen && targetListName) {
+        chosen = available.actions?.find(a => a.name === "PersonMoveToClubShortlistPlayer");
+        usedActionName = "PersonMoveToClubShortlistPlayer";
+      }
+      if (!chosen) {
+        const offeredNames = (available.actions || []).map(a => a.name);
+        throw new Error(`游戏当前未向该球员提供加入候选名单菜单（可能该球员已在候选名单中或属于本队球员）。当前可用动作：${offeredNames.join(", ") || "无"}`);
+      }
+
+      const actionRef = await scope.subscribe("game", "Action", { ...contexts, ID: { $u32: chosen.id } });
+      const itemsSub = await scope.subscribe(actionRef.handle, "Items", contexts);
+      const entries = await flattenActionMenu(scope, itemsSub.read?.value);
+      const selected = pickShortlistMenuLeaf(entries, { targetListName, duration });
+
+      if (previewOnly) {
+        return {
+          ok: true,
+          readOnly: true,
+          action: usedActionName,
+          player: { name: player.name, identity: player.identity, club: player.club },
+          requestedShortlist: targetListName || "(默认)",
+          selectedLeaf: selected,
+          availableLeaves: entries.filter(e => e.executableLeaf).map(e => ({ entry: e.entry, fullPath: e.fullPath, disabled: e.disabled }))
+        };
+      }
+
+      if (!selected) {
+        const leaves = entries.filter(e => e.executableLeaf).map(e => e.fullPath);
+        throw new Error(`未在游戏原生菜单中匹配到目标候选名单 "${targetListName || "(默认)"}"；当前可选叶节点：${leaves.join(" | ") || "无"}`);
+      }
+
+      const query = { offered: offered.handle, action: actionRef.handle, items: itemsSub.handle, entry: selected.entry };
+      const preview = await scope.api("/api/v1/player-management/preview", query);
+      if (preview.disabled || !preview.silentExecutionImplemented) {
+        throw new Error(`游戏当前禁用了菜单项 "${selected.fullPath}"，无法执行。`);
+      }
+      const dispatch = await scope.api(
+        "/api/v1/player-management/execute",
+        { ...query, id, choiceToken: preview.choiceToken, acceptConfirmation: true },
+        true
+      );
+      await new Promise(r => setTimeout(r, 450));
+      const after = await readShortlists(scope);
+      return {
+        ok: true,
+        operationId: id,
+        action: usedActionName,
+        player: { name: player.name, identity: player.identity, club: player.club },
+        selectedEntry: selected.entry,
+        selectedPath: selected.fullPath,
+        beforeShortlists: before.items.map(x => ({ index: x.index, name: x.name, countText: x.countText })),
+        afterShortlists: after.items.map(x => ({ index: x.index, name: x.name, countText: x.countText })),
+        dispatch
+      };
+    });
+  }
+
+  // 将指定球员从候选名单中移出（走游戏原生 PersonRemovePlayersFromShortlist 菜单叶节点）
+  async function removePlayerFromShortlist({
+    playerName,
+    personIdentity = "",
+    club = "",
+    shortlistName = "",
+    previewOnly = false,
+    operationId
+  } = {}) {
+    if (!stripRichText(playerName)) throw new Error("必须提供球员姓名 playerName。");
+    const id = operationId || `shortlist_remove_${Date.now()}`;
+    return client.scope(async scope => {
+      const before = await readShortlists(scope);
+      const player = await resolveExternalPlayerByName(scope, { playerName, personIdentity, club });
+      const contexts = {
+        human: { source: "human" },
+        Human: { source: "human" },
+        team: { source: before.team.handle },
+        Team: { source: before.team.handle },
+        Records: [{ $reference: { source: player.handle, path: "" } }]
+      };
+      const offered = await scope.subscribe("game", "Actions", contexts);
+      const available = await scope.api("/api/v1/player-management/available", { offered: offered.handle });
+      const chosen = available.actions?.find(a => a.name === "PersonRemovePlayersFromShortlist");
+      if (!chosen) {
+        throw new Error(`游戏当前未向 "${player.name}" 提供移出候选名单菜单（可能该球员当前不在任何候选名单中）。`);
+      }
+
+      const actionRef = await scope.subscribe("game", "Action", { ...contexts, ID: { $u32: chosen.id } });
+      const itemsSub = await scope.subscribe(actionRef.handle, "Items", contexts);
+      const entries = await flattenActionMenu(scope, itemsSub.read?.value);
+      const selected = pickShortlistMenuLeaf(entries, { targetListName: shortlistName });
+
+      if (previewOnly) {
+        return {
+          ok: true,
+          readOnly: true,
+          action: "PersonRemovePlayersFromShortlist",
+          player: { name: player.name, identity: player.identity, club: player.club },
+          selectedLeaf: selected,
+          availableLeaves: entries.filter(e => e.executableLeaf).map(e => ({ entry: e.entry, fullPath: e.fullPath, disabled: e.disabled }))
+        };
+      }
+
+      if (!selected) throw new Error("未在游戏移出候选名单菜单中找到可执行项。");
+      const query = { offered: offered.handle, action: actionRef.handle, items: itemsSub.handle, entry: selected.entry };
+      const preview = await scope.api("/api/v1/player-management/preview", query);
+      if (preview.disabled || !preview.silentExecutionImplemented) {
+        throw new Error(`游戏当前禁用了菜单项 "${selected.fullPath}"，无法执行。`);
+      }
+      const dispatch = await scope.api(
+        "/api/v1/player-management/execute",
+        { ...query, id, choiceToken: preview.choiceToken, acceptConfirmation: true },
+        true
+      );
+      await new Promise(r => setTimeout(r, 450));
+      const after = await readShortlists(scope);
+      return {
+        ok: true,
+        operationId: id,
+        action: "PersonRemovePlayersFromShortlist",
+        player: { name: player.name, identity: player.identity, club: player.club },
+        selectedEntry: selected.entry,
+        selectedPath: selected.fullPath,
+        beforeShortlists: before.items.map(x => ({ index: x.index, name: x.name, countText: x.countText })),
+        afterShortlists: after.items.map(x => ({ index: x.index, name: x.name, countText: x.countText })),
+        dispatch
+      };
+    });
+  }
+
+  return {
+    listShortlists,
+    createShortlist,
+    renameShortlist,
+    deleteShortlist,
+    movePlayerBetweenShortlists,
+    addPlayerToShortlist,
+    removePlayerFromShortlist
+  };
 }
