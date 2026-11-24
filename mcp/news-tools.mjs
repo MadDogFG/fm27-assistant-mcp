@@ -124,8 +124,7 @@ export function createNewsTools(call) {
       for (let index = offset; index < end; index++) {
         const path = String(index);
         const original = (await scope.ready(list.handle, path)).value;
-        if (original?.type !== "FM.UI.HappinessIssuesRowReference" || !original.identity)
-          throw new Error("FM did not return an identifiable happiness issue.");
+        if (original?.type !== "FM.UI.HappinessIssuesRowReference" || !original.identity) continue;
         const source = { source: list.handle, path };
         const hasPromises = await scope.subscribeOptional(source, "IssueHasPromises", contexts);
         const linked = await scope.subscribeOptional(source, "IssueLinkedPromises", contexts);
