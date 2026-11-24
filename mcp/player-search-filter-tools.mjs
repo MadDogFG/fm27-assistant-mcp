@@ -36,7 +36,9 @@ function matchesPosition(posText, query) {
 export function createPlayerSearchFilterTools(call) {
   const client = createLiveClient(call);
 
-  // 多条件数据库球员搜索：基于 HumanPersonSearch.PersonList 并发扫描与精准筛选
+  // 多条件数据库球员搜索：
+  // - 当提供 name 时优先走全库原生 game.Search (FM.UI.SearchReference) + RowData 毫秒级直达全库任意球员；
+  // - 未提供 name 时基于 HumanPersonSearch.PersonList 并发扫描与多条件筛选
   async function searchPlayers({
     searchType = 1,
     name = "",
@@ -66,6 +68,132 @@ export function createPlayerSearchFilterTools(call) {
       const ctx = team.handle
         ? { human: { source: "human" }, Human: { source: "human" }, team: { source: team.handle }, Team: { source: team.handle }, Type: searchType, type: searchType }
         : { human: { source: "human" }, Human: { source: "human" }, Type: searchType, type: searchType };
+
+      // 通用单人资料解析与多条件过滤辅助函数
+      async function inspectAndFilter(pRef, searchIndex, extraMeta = {}) {
+        const pCtx = { ...ctx, Person: pRef };
+        const tasks = [
+          scope.readAndRelease(pRef, "Name", pCtx, 600),
+          scope.readAndRelease(pRef, "Age", pCtx, 600),
+          scope.readAndRelease(pRef, "BestPositionShortString", pCtx, 600),
+          scope.readAndRelease(pRef, "NationalityText", pCtx, 600),
+          scope.subscribeOptional(pRef, "Club", pCtx, 600)
+        ];
+        if (needHeight) tasks.push(scope.readAndRelease(pRef, "Height", pCtx, 600));
+        const res = await Promise.all(tasks);
+        const [nameR, ageR, posR, natR, clubSub] = res;
+        const heightR = needHeight ? res[5] : null;
+
+        const pName = cleanText(nameR.scalar || "");
+        const pAge = Number.parseInt(ageR.scalar, 10);
+        const pPos = cleanText(posR.scalar || "");
+        const pNat = cleanText(natR.scalar || "");
+        const isFreeAgent = !clubSub.handle || clubSub.read?.value?.type === "SI.Bindable.NullReference";
+        const pHeight = heightR?.ok ? Number.parseInt(heightR.scalar, 10) : null;
+
+        let pass = Boolean(pName);
+        if (pass && posQ && !matchesPosition(pPos, posQ)) pass = false;
+        if (pass && Number.isFinite(Number(minAge)) && (!Number.isFinite(pAge) || pAge < Number(minAge))) pass = false;
+        if (pass && Number.isFinite(Number(maxAge)) && (!Number.isFinite(pAge) || pAge > Number(maxAge))) pass = false;
+        if (pass && natQ && !pNat.toLowerCase().includes(natQ)) pass = false;
+        if (pass && freeAgentOnly && !isFreeAgent) pass = false;
+        if (pass && Number.isFinite(Number(minHeight)) && (!Number.isFinite(pHeight) || pHeight < Number(minHeight))) pass = false;
+        if (pass && Number.isFinite(Number(maxHeight)) && (!Number.isFinite(pHeight) || pHeight > Number(maxHeight))) pass = false;
+
+        let clubName = isFreeAgent ? "自由球员" : null;
+        if (pass && !isFreeAgent && clubSub.handle) {
+          const cn = await scope.readAndRelease(clubSub.handle, "Name", pCtx, 500);
+          clubName = cleanText(cn.scalar || "") || "有约在身";
+        }
+        if (clubSub.handle) await scope.release(clubSub.handle).catch(() => {});
+
+        if (pass && clubQ && !(clubName || "").toLowerCase().includes(clubQ)) pass = false;
+        if (!pass) return null;
+
+        return {
+          searchIndex,
+          ...extraMeta,
+          name: pName,
+          age: Number.isFinite(pAge) ? pAge : null,
+          position: pPos || null,
+          nationality: pNat || null,
+          club: clubName,
+          freeAgent: isFreeAgent,
+          ...(Number.isFinite(pHeight) ? { heightCm: pHeight } : {})
+        };
+      }
+
+      // 优先路径：提供姓名关键词时，走 game.Search 全局原生搜索，毫秒级直达全库任意球员
+      if (nameQ) {
+        const gs = await scope.subscribeOptional("game", "Search", { human: { source: "human" } }, 1200);
+        if (gs.handle) {
+          const sName = await scope.subscribeOptional(gs.handle, "Name", {}, 800);
+          const sList = await scope.subscribeOptional(gs.handle, "PersonList", {}, 800);
+          if (sName.handle && sList.handle) {
+            await call(`/api/v1/internal/update?handle=${encodeURIComponent(sName.handle)}&apply=true`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(cleanText(name))
+            });
+            // 等待游戏搜索引擎返回结果
+            let listVal = null;
+            for (let attempt = 0; attempt < 6; attempt++) {
+              await new Promise(r => setTimeout(r, attempt === 0 ? 450 : 200));
+              listVal = (await scope.ready(sList.handle)).value;
+              if ((listVal?.count || 0) > 0) break;
+            }
+            const totalHits = listVal?.count || 0;
+            const toInspect = Math.min(totalHits, safeLimit * 2, 40);
+            const matched = [];
+            for (let i = 0; i < toInspect; i++) {
+              const rowSub = await scope.subscribeOptional({ source: sList.handle, path: String(i) }, "RowData", ctx, 700);
+              if (!rowSub.handle || rowSub.read?.value?.type !== "FM.UI.PersonReference") {
+                if (rowSub.handle) await scope.release(rowSub.handle).catch(() => {});
+                continue;
+              }
+              const descR = await scope.readAndRelease({ source: sList.handle, path: String(i) }, "Description", {}, 400);
+              const row = await inspectAndFilter(
+                { source: rowSub.handle },
+                i,
+                {
+                  personIdentity: rowSub.read?.value?.identity || null,
+                  summary: cleanText(descR.scalar || "") || null
+                }
+              );
+              await scope.release(rowSub.handle).catch(() => {});
+              if (row) matched.push(row);
+              if (!needFullScan && matched.length >= safeLimit) break;
+            }
+            if (sortBy === "age_asc") matched.sort((a, b) => (a.age ?? 99) - (b.age ?? 99));
+            else if (sortBy === "age_desc") matched.sort((a, b) => (b.age ?? 0) - (a.age ?? 0));
+            else if (sortBy === "height_desc") matched.sort((a, b) => (b.heightCm ?? 0) - (a.heightCm ?? 0));
+            const players = matched.slice(0, safeLimit);
+            return {
+              ok: true,
+              readOnly: true,
+              searchMode: "global_database_search",
+              totalInDatabase: totalHits,
+              scanned: toInspect,
+              matchedCount: matched.length,
+              returnedCount: players.length,
+              filters: {
+                name: cleanText(name),
+                position: posQ || null,
+                minAge: minAge ?? null,
+                maxAge: maxAge ?? null,
+                nationality: natQ || null,
+                club: clubQ || null,
+                freeAgentOnly: Boolean(freeAgentOnly),
+                minHeight: minHeight ?? null,
+                maxHeight: maxHeight ?? null,
+                sortBy
+              },
+              players
+            };
+          }
+        }
+      }
+
       const personSearch = await scope.subscribeOptional("human", "HumanPersonSearch", ctx, 1500);
       if (!personSearch.handle) {
         return { ok: false, error: "当前存档未开放 HumanPersonSearch 球员搜索数据库。" };
@@ -85,57 +213,9 @@ export function createPlayerSearchFilterTools(call) {
 
         const batchRows = await Promise.all(batchIndices.map(async idx => {
           const pRef = { source: pl.handle, path: String(idx) };
-          const pCtx = { ...ctx, Person: pRef };
-          const tasks = [
-            scope.readAndRelease(pRef, "Name", pCtx, 600),
-            scope.readAndRelease(pRef, "Age", pCtx, 600),
-            scope.readAndRelease(pRef, "BestPositionShortString", pCtx, 600),
-            scope.readAndRelease(pRef, "NationalityText", pCtx, 600),
-            scope.subscribeOptional(pRef, "Club", pCtx, 600)
-          ];
-          if (needHeight) tasks.push(scope.readAndRelease(pRef, "Height", pCtx, 600));
-          const res = await Promise.all(tasks);
-          const [nameR, ageR, posR, natR, clubSub] = res;
-          const heightR = needHeight ? res[5] : null;
-
-          const pName = cleanText(nameR.scalar || "");
-          const pAge = Number.parseInt(ageR.scalar, 10);
-          const pPos = cleanText(posR.scalar || "");
-          const pNat = cleanText(natR.scalar || "");
-          const isFreeAgent = !clubSub.handle || clubSub.read?.value?.type === "SI.Bindable.NullReference";
-          const pHeight = heightR?.ok ? Number.parseInt(heightR.scalar, 10) : null;
-
-          // 按轻量字段优先过滤，减少不必要的 Club.Name 二次读取
-          let pass = Boolean(pName);
-          if (pass && nameQ && !pName.toLowerCase().includes(nameQ)) pass = false;
-          if (pass && posQ && !matchesPosition(pPos, posQ)) pass = false;
-          if (pass && Number.isFinite(Number(minAge)) && (!Number.isFinite(pAge) || pAge < Number(minAge))) pass = false;
-          if (pass && Number.isFinite(Number(maxAge)) && (!Number.isFinite(pAge) || pAge > Number(maxAge))) pass = false;
-          if (pass && natQ && !pNat.toLowerCase().includes(natQ)) pass = false;
-          if (pass && freeAgentOnly && !isFreeAgent) pass = false;
-          if (pass && Number.isFinite(Number(minHeight)) && (!Number.isFinite(pHeight) || pHeight < Number(minHeight))) pass = false;
-          if (pass && Number.isFinite(Number(maxHeight)) && (!Number.isFinite(pHeight) || pHeight > Number(maxHeight))) pass = false;
-
-          let clubName = isFreeAgent ? "自由球员" : null;
-          if (pass && !isFreeAgent && clubSub.handle) {
-            const cn = await scope.readAndRelease(clubSub.handle, "Name", pCtx, 500);
-            clubName = cleanText(cn.scalar || "") || "有约在身";
-          }
-          if (clubSub.handle) await scope.release(clubSub.handle).catch(() => {});
-
-          if (pass && clubQ && !(clubName || "").toLowerCase().includes(clubQ)) pass = false;
-          if (!pass) return null;
-
-          return {
-            searchIndex: idx,
-            name: pName,
-            age: Number.isFinite(pAge) ? pAge : null,
-            position: pPos || null,
-            nationality: pNat || null,
-            club: clubName,
-            freeAgent: isFreeAgent,
-            ...(Number.isFinite(pHeight) ? { heightCm: pHeight } : {})
-          };
+          const row = await inspectAndFilter(pRef, idx, { personIdentity: pl.read?.value?.items?.[idx]?.identity || null });
+          if (row && nameQ && !row.name.toLowerCase().includes(nameQ)) return null;
+          return row;
         }));
 
         scanned += batchIndices.length;
@@ -154,6 +234,7 @@ export function createPlayerSearchFilterTools(call) {
       return {
         ok: true,
         readOnly: true,
+        searchMode: "scouting_pool_scan",
         totalInDatabase,
         scanned,
         matchedCount: matched.length,

@@ -586,7 +586,7 @@ export function createExtendedTools(call) {
     ["manage_dof_target_group", "创建、重命名或删除总监转会目标组（create/rename/delete）。", { action: { type: "string", enum: ["create", "rename", "delete"], default: "create" }, name: text, groupIndex: { type: "integer", minimum: 0, default: 0 }, operationId: text }, [], dofFollow.manageDofTargetGroup],
     ["get_holiday_status", "只读读取当前经理是否处于休假状态、返岗时间及度假配置草稿。", {}, [], managerHoliday.getHolidayStatus],
     ["manage_holiday", "设置经理假期（go）或提前结束假期（return）并独立读回 IsOnHoliday 校验（MGR-O15d/e）。", { action: { type: "string", enum: ["go", "return"], default: "go" }, returnDateType: { type: "integer", minimum: 0 }, returnNumberDays: { type: "integer", minimum: 1 }, useCurrentTactics: { type: "boolean" }, useTeamSelection: { type: "boolean" }, applyForJobs: { type: "boolean" }, operationId: text }, [], managerHoliday.manageHoliday],
-    ["search_players", "多条件搜索游戏球员数据库（HumanPersonSearch.PersonList），支持按姓名、位置（支持中英文如 ST/DC/DM/门将/后卫）、年龄区间、国籍、俱乐部、仅自由球员、身高区间过滤与排序，返回紧凑球员列表。", {
+    ["search_players", "多条件搜索游戏球员数据库：传入 name 时优先通过原生 game.Search 毫秒级直达全库任意球员并返回 personIdentity；未传 name 时扫描球探数据库（HumanPersonSearch.PersonList）。支持按姓名、位置（中英文如 ST/DC/DM/门将）、年龄区间、国籍、俱乐部、仅自由球员、身高区间过滤与排序。", {
       name: text,
       position: text,
       minAge: { type: "integer", minimum: 14 },

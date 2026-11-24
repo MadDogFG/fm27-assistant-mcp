@@ -99,7 +99,8 @@ public static class NegotiationActions
                 throw new InvalidOperationException("This action first runs an additional news/card workflow.");
         }
         var eventId = uint.Parse(Field(row, "Event").AsString(), CultureInfo.InvariantCulture);
-        if (domain != "transfer" ? eventId != 20 && eventId != 41 : eventId != 32)
+        // 放行签约前承诺完成后过渡至正式合同谈判的原生事件 140 (EventFmxProceedToContractNegotiations)
+        if (domain != "transfer" ? eventId != 20 && eventId != 41 && eventId != 140 : eventId != 32)
             throw new InvalidOperationException("The silent protocol for this negotiation event has not been recovered yet.");
         var payload = new SI.Core.Record();
         payload[0x204a3168] = TypedValue.CreateCopyFrom(offered.Npc);

@@ -24,20 +24,27 @@ export function createTransferTools(call) {
     });
   }
   async function term(args, action) {
-    return context(args, async values => {
+    // 兼容调用方误传 field 或 fee/amount 别名，统一映射到合法 kind（cash/primary/secondary/left-right）
+    let resolvedKind = args.kind || args.field;
+    if (resolvedKind === "fee" || resolvedKind === "amount") resolvedKind = "cash";
+    const normalizedArgs = { ...args, kind: resolvedKind };
+    return context(normalizedArgs, async values => {
       const { scope, session, collection, contexts, references, routing } = values;
-      const recipe = routing.recipes.find(recipe => recipe.Kind === args.kind);
-      if (!recipe) throw new Error("未知转会条款字段。");
-      if (!references.some(reference => reference.path === args.clausePath)) throw new Error("clausePath 必须来自当前游戏条款列表。");
-      const clause = { source: collection.handle, path: args.clausePath };
+      const recipe = routing.recipes.find(recipe => recipe.Kind === normalizedArgs.kind);
+      if (!recipe) {
+        const validKinds = (routing.recipes || []).map(r => r.Kind).join("/");
+        throw new Error(`未知转会条款字段 kind="${normalizedArgs.kind ?? ""}"；可用 kind：${validKinds || "cash/primary/secondary/left-right"}（修改转会费请传 kind="cash" 与整数字符串 amount）。`);
+      }
+      if (!references.some(reference => reference.path === normalizedArgs.clausePath)) throw new Error("clausePath 必须来自当前游戏条款列表。");
+      const clause = { source: collection.handle, path: normalizedArgs.clausePath };
       const current = await scope.subscribe(clause, recipe.Current, contexts);
-      const cash = args.kind === "cash" ? await scope.subscribe(clause, recipe.Choices, contexts) : null;
+      const cash = normalizedArgs.kind === "cash" ? await scope.subscribe(clause, recipe.Choices, contexts) : null;
       const choices = cash || await scope.subscribe(clause, recipe.Choices, contexts);
       const offerEditable = await scope.subscribe(session.handle, "CanMakeChangesToOffer", contexts);
       const clauseEnabled = await scope.subscribe(clause, "IsEnabled", contexts);
-      const query = { kind: args.kind, session: session.handle, club: values.club.handle, collection: collection.handle,
-        clausePath: args.clausePath, current: current.handle, cash: cash?.handle, choices: choices.handle,
-        offerEditable: offerEditable.handle, clauseEnabled: clauseEnabled.handle, option: args.optionIndex, amount: args.amount };
+      const query = { kind: normalizedArgs.kind, session: session.handle, club: values.club.handle, collection: collection.handle,
+        clausePath: normalizedArgs.clausePath, current: current.handle, cash: cash?.handle, choices: choices.handle,
+        offerEditable: offerEditable.handle, clauseEnabled: clauseEnabled.handle, option: normalizedArgs.optionIndex, amount: normalizedArgs.amount };
       const state = await scope.api("/api/v1/transfers/state", query);
       return action({ ...values, current, cash, choices, offerEditable, clauseEnabled, query, state });
     });
@@ -59,9 +66,12 @@ export function createTransferTools(call) {
       value: current.read.value, choices: choices.read.value, cashInput: cash?.read.value,
       offerEditable: scalar(offerEditable.read.value), clauseEnabled: scalar(clauseEnabled.read.value) })),
     set: async args => {
-      if (args.kind === "cash" ? typeof args.amount !== "string" || !/^[+-]?\d+$/.test(args.amount) : !Number.isInteger(args.optionIndex) || args.optionIndex < 0)
-        throw new Error("金额使用游戏现金输入框同单位的整数字符串 amount；其它字段使用合法 optionIndex。");
-      const receipt = await term(args, async ({ scope, query, state }) => {
+      let resolvedKind = args.kind || args.field;
+      if (resolvedKind === "fee" || resolvedKind === "amount") resolvedKind = "cash";
+      const normalizedArgs = { ...args, kind: resolvedKind };
+      if (normalizedArgs.kind === "cash" ? typeof normalizedArgs.amount !== "string" || !/^[+-]?\d+$/.test(normalizedArgs.amount) : !Number.isInteger(normalizedArgs.optionIndex) || normalizedArgs.optionIndex < 0)
+        throw new Error("金额使用游戏现金输入框同单位的整数字符串 amount（kind='cash'）；其它字段使用合法 optionIndex。");
+      const receipt = await term(normalizedArgs, async ({ scope, query, state }) => {
         if (args.expectedCurrent !== undefined && args.expectedCurrent !== state.current) throw new Error("报价条款已变化，请刷新。");
         const preview = await scope.api("/api/v1/transfers/preview", query);
         if (args.expectedChoiceToken && args.expectedChoiceToken !== preview.choiceToken) throw new Error("报价选项或金额上下文已变化。");
