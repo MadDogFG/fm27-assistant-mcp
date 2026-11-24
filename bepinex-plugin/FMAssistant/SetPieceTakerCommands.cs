@@ -102,7 +102,13 @@ public static class SetPieceTakerCommands
                 break;
             case "remove":
                 offered = NativeValueFingerprint.Compute(SideTakers(takerList, setpiece));
-                data = Rows(takerList, paths, SideTakerPath + "/");
+                // EventFmxSetPieceTakerRemoveFromList 原生期望单行 DynamicReference（不包成 List<TypedValue>）
+                var rmSelection = JsonSerializer.Deserialize<string[]>(paths) ?? throw new ArgumentException("Select one original taker row to remove.");
+                if (rmSelection.Length != 1 || !int.TryParse(rmSelection[0], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var rmIdx) || rmIdx < 0)
+                    throw new ArgumentException("remove 每次需传入 1 个有效的零基主罚名单行下标。");
+                var rmRow = LiveTools.GetValue(takerList, SideTakerPath + "/" + rmSelection[0]);
+                if (NegotiationActions.Record(rmRow) == null) throw new ArgumentException("Expected a native set-piece taker row.");
+                data = TypedValue.CreateCopyFrom(rmRow);
                 eventId = (uint)InteropEventIDs.EventFmxSetPieceTakerRemoveFromList;
                 break;
             case "move":

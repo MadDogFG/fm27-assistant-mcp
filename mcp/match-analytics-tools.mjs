@@ -61,7 +61,7 @@ export function createMatchAnalyticsTools(call) {
   }
 
   // MAT-R10 / MAT-R11 / MAT-R28: 球队实时统计、xG 与射门图、比赛基础观众/比分/裁判
-  async function teamStatsAndXg({ includeShotMap = false } = {}) {
+  async function teamStatsAndXg({ includeShotMap = false, compact = true } = {}) {
     const state = await requireInMatch();
     const idMap = await getPropertyMap();
     return client.scope(async scope => {
@@ -71,15 +71,79 @@ export function createMatchAnalyticsTools(call) {
         const comps = await scope.subscribeOptional({ source: team.handle }, "CurrentComps", { human: { source: "human" }, team: { source: team.handle } }, 1000);
         if (comps.read?.value?.items?.length) contexts.Competition = { source: comps.handle, path: "0" };
       }
+      // 读取直播实时 Stats(isHomeTeam: true/false)，替代比赛进行中恒为 0/50% 的静态 HomeShots/HomePossession 字段
+      const [homeLiveSub, awayLiveSub] = await Promise.all([
+        scope.subscribeOptional("match", "Stats", { ...contexts, isHomeTeam: true }, 1500),
+        scope.subscribeOptional("match", "Stats", { ...contexts, isHomeTeam: false }, 1500)
+      ]);
+      const homeLive = homeLiveSub.handle ? decodeValue(homeLiveSub.read?.value ?? null, idMap) : null;
+      const awayLive = awayLiveSub.handle ? decodeValue(awayLiveSub.read?.value ?? null, idMap) : null;
+      if (homeLiveSub.handle) await scope.release(homeLiveSub.handle).catch(() => {});
+      if (awayLiveSub.handle) await scope.release(awayLiveSub.handle).catch(() => {});
+
       const fields = [
         "MatchScore", "GoalscorersString",
-        "HomePossession", "AwayPossession", "MatchLastFiveMinutesPossession",
-        "HomeShots", "AwayShots", "HomeShotsOnTarget", "AwayShotsOnTarget",
-        "HomeCorners", "AwayCorners", "HomeFouls", "AwayFouls",
+        "MatchLastFiveMinutesPossession",
         "Attendance", "AnnouncedAttendance", "XgValue"
       ];
+      if (!homeLive || !awayLive) {
+        fields.push(
+          "HomePossession", "AwayPossession",
+          "HomeShots", "AwayShots", "HomeShotsOnTarget", "AwayShotsOnTarget",
+          "HomeCorners", "AwayCorners", "HomeFouls", "AwayFouls"
+        );
+      }
       if (includeShotMap) fields.push("HomeShotMap", "AwayShotMap");
       const data = await readMatchProps(scope, fields, { ...contexts, isHomeTeam: state.isHomeTeam }, idMap);
+
+      // 若成功读到实时 Stats(isHomeTeam)，回填所有兼容字段并提供完整结构化主客队实时统计
+      if (homeLive && awayLive && typeof homeLive === "object" && typeof awayLive === "object") {
+        data.HomePossession = homeLive.BallShare ?? homeLive.TotalPossession ?? data.HomePossession;
+        data.AwayPossession = awayLive.BallShare ?? awayLive.TotalPossession ?? data.AwayPossession;
+        data.HomeShots = homeLive.TotalShots ?? data.HomeShots;
+        data.AwayShots = awayLive.TotalShots ?? data.AwayShots;
+        data.HomeShotsOnTarget = homeLive.ShotsOnTarget ?? data.HomeShotsOnTarget;
+        data.AwayShotsOnTarget = awayLive.ShotsOnTarget ?? data.AwayShotsOnTarget;
+        data.HomeCorners = homeLive.Corners ?? data.HomeCorners;
+        data.AwayCorners = awayLive.Corners ?? data.AwayCorners;
+        data.HomeFouls = homeLive.FoulsMade ?? data.HomeFouls;
+        data.AwayFouls = awayLive.FoulsMade ?? data.AwayFouls;
+      }
+
+      // 紧凑模式下对 XgValue 巨型对象做瘦身，只保留比分/xG 文本与摘要，省 Token
+      if (compact && data.XgValue && typeof data.XgValue === "object") {
+        data.XgValue = {
+          xg: data.XgValue.XgValue ?? null,
+          score: data.XgValue.MatchScore ?? null,
+          fixture: data.XgValue.Fixture ?? null,
+          summary: data.XgValue.PerformanceSummary ?? null
+        };
+      }
+
+      const pickSummary = s => {
+        if (!s || typeof s !== "object") return null;
+        return {
+          possession: s.BallShare ?? s.TotalPossession ?? null,
+          shots: s.TotalShots ?? null,
+          shotsOnTarget: s.ShotsOnTarget ?? null,
+          xg: s.ExpectedGoals != null ? Number(Number(s.ExpectedGoals).toFixed(2)) : null,
+          npxg: s.NonPenaltyExpectedGoals != null ? Number(Number(s.NonPenaltyExpectedGoals).toFixed(2)) : null,
+          chancesCreated: s.ChancesCreated ?? null,
+          corners: s.Corners ?? null,
+          fouls: s.FoulsMade ?? null,
+          passAttempts: s.PassAttempts ?? null,
+          passCompleted: s.PassCompleted ?? null,
+          passPct: s.PassCompletionPercentage ?? null,
+          progressivePasses: s.ProgressivePasses ?? null,
+          finalThirdPasses: s.FinalThirdPasses ?? null,
+          ppda: s.OppositionPassesPerDefensiveAction != null ? Number(Number(s.OppositionPassesPerDefensiveAction).toFixed(1)) : null,
+          tacklesCompleted: s.TackleCompleted ?? null,
+          yellowCards: s.YellowCards ?? null,
+          redCards: s.RedCards ?? null,
+          avgRating: s.AverageRatingFloat != null ? Number(Number(s.AverageRatingFloat).toFixed(2)) : null
+        };
+      };
+
       const refSub = await scope.subscribeOptional("match", "MatchReferee", contexts, 1000);
       let refereeName = null;
       if (refSub.handle) {
@@ -88,7 +152,10 @@ export function createMatchAnalyticsTools(call) {
       }
       return {
         ok: true, readOnly: true, minute: state.minute, continueState: state.continueState,
-        isHomeTeam: state.isHomeTeam, refereeName, stats: data
+        isHomeTeam: state.isHomeTeam, refereeName,
+        homeTeamLiveStats: compact ? pickSummary(homeLive) : homeLive,
+        awayTeamLiveStats: compact ? pickSummary(awayLive) : awayLive,
+        stats: data
       };
     });
   }

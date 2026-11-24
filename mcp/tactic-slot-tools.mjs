@@ -1,4 +1,21 @@
-import { createLiveClient, scalar } from "./live-client.mjs";
+import { createLiveClient, scalar, clean } from "./live-client.mjs";
+
+// 预设战术风格中英文别名映射，支持用中文、英文或数字 ID 一键切换
+const TACTICAL_STYLE_ALIASES = {
+  "0": ["控制球权", "control possession", "control", "possession"],
+  "1": ["高位压迫", "gegenpress", "gegenpressing", "high press"],
+  "2": ["密集短传", "tiki-taka", "tiki taka", "tikitaka"],
+  "3": ["垂直密集短传", "vertical tiki-taka", "vertical tiki taka"],
+  "4": ["双翼齐飞", "wing play", "wingplay", "wings"],
+  "5": ["长传冲吊", "route one", "long ball"],
+  "6": ["灵活防反", "fluid counter-attack", "fluid counter", "fluid"],
+  "7": ["快速防反", "direct counter-attack", "direct counter", "counter"],
+  "8": ["链式防守", "catenaccio"],
+  "9": ["摆大巴", "park the bus", "park bus", "bus"],
+  "10": ["空白", "clean slate", "blank"]
+};
+
+const stripStyleText = v => clean(v).replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
 
 export function createTacticSlotTools(call) {
   const client = createLiveClient(call);
@@ -115,6 +132,90 @@ export function createTacticSlotTools(call) {
         catch (error) { return { ...receipt, observationError: String(error.message || error), retrySafe: false, tacticManagementVerified: false }; }
       });
     },
+    // 一键读取或切换预设战术风格（直接更新原生 TacticalStyleDropdown 并读回验证心态/风格同步生效）
+    setStyle: async ({ style, previewOnly = false } = {}) => client.scope(async scope => {
+      const { team, tactic } = await scope.tactic();
+      const ctx = { human: { source: "human" }, Human: { source: "human" }, team: { source: team.handle }, Team: { source: team.handle } };
+      const [sStyle, sDD, sOpts, sRec, sMent] = await Promise.all([
+        scope.subscribe(tactic.handle, "TacticalStyle", ctx),
+        scope.subscribe(tactic.handle, "TacticalStyleDropdown", ctx),
+        scope.subscribe(tactic.handle, "TacticalStyleDropdownOptions", ctx),
+        scope.subscribeOptional(tactic.handle, "TopThreeRecommendedTacticalStyles", ctx, 800),
+        scope.subscribeOptional(tactic.handle, "Mentality", ctx, 800)
+      ]);
+      const rawItems = sOpts.read?.value?.items || [];
+      const options = rawItems.map((item, idx) => ({
+        index: idx,
+        id: String(item.fields?.["0x7074766c"]?.value ?? idx),
+        label: stripStyleText(item.fields?.["0x71764a36"]?.value || "")
+      }));
+      const current = {
+        styleId: String(scalar(sStyle.read?.value) ?? ""),
+        dropdownId: String(sDD.read?.value?.fields?.["0x7074766c"]?.value ?? ""),
+        label: stripStyleText(sDD.read?.value?.fields?.["0x71764a36"]?.value || ""),
+        mentality: sMent.handle ? String(scalar(sMent.read?.value) ?? "") : null
+      };
+      const recommendedIds = (sRec.read?.value?.items || []).map(x => String(x?.value ?? x)).filter(Boolean);
+
+      if (style === undefined || style === null || style === "" || previewOnly) {
+        return { ok: true, readOnly: true, current, recommendedIds, options };
+      }
+
+      // 解析目标风格（支持数字 ID、中文标签、英文别名模糊匹配）
+      const q = stripStyleText(String(style)).toLowerCase();
+      let target = options.find(o => o.id === q || o.label.toLowerCase() === q);
+      if (!target) {
+        target = options.find(o => o.label.toLowerCase().includes(q));
+      }
+      if (!target) {
+        for (const [id, aliases] of Object.entries(TACTICAL_STYLE_ALIASES)) {
+          if (aliases.some(a => a.includes(q) || q.includes(a))) {
+            target = options.find(o => o.id === id);
+            if (target) break;
+          }
+        }
+      }
+      if (!target) {
+        throw new Error(`未匹配到预设战术风格 "${style}"；可用风格：${options.map(o => `${o.id}:${o.label}`).join(" / ")}`);
+      }
+
+      const dispatch = await call(`/api/v1/internal/update?handle=${encodeURIComponent(sDD.handle)}&apply=true`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ $value: { source: sOpts.handle, path: String(target.index) } })
+      });
+
+      // 轮询读回验证 TacticalStyle 与 TacticalStyleDropdown 已生效
+      let after = null;
+      let verified = false;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await new Promise(r => setTimeout(r, attempt === 0 ? 300 : 200));
+        const [rStyle, rDD, rMent] = await Promise.all([
+          scope.ready(sStyle.handle),
+          scope.ready(sDD.handle),
+          sMent.handle ? scope.ready(sMent.handle) : Promise.resolve(null)
+        ]);
+        after = {
+          styleId: String(scalar(rStyle?.value) ?? ""),
+          dropdownId: String(rDD?.value?.fields?.["0x7074766c"]?.value ?? ""),
+          label: stripStyleText(rDD?.value?.fields?.["0x71764a36"]?.value || ""),
+          mentality: rMent ? String(scalar(rMent?.value) ?? "") : null
+        };
+        if (after.styleId === target.id && after.dropdownId === target.id) {
+          verified = true;
+          break;
+        }
+      }
+
+      return {
+        ok: Boolean(dispatch?.ok !== false && verified),
+        verified,
+        requested: target,
+        before: current,
+        after,
+        recommendedIds
+      };
+    }),
     get: args => context(args, (scope, query) => args.action ? scope.api("/api/v1/tactic-slots/preview", query) : scope.api("/api/v1/tactic-slots/state", { ...query, operationId: args.operationId })),
     execute: args => {
       if (!["select", "training"].includes(args.action) || !Number.isInteger(args.slotIndex) || args.slotIndex < 0 || !args.operationId || !args.expectedChoiceToken)

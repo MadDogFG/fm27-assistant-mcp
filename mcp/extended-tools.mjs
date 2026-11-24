@@ -268,6 +268,7 @@ export function createExtendedTools(call) {
     outOfPossessionFormation: { type: "integer", minimum: 1 }, expectedChoiceToken: text, operationId: text };
   const definitions = [
     ["get_tactic_creation", "读取球队当前空槽及原生创建选项。提供风格、持球阵型、无球阵型 ID 即可预览一次创建。", tacticCreationArgs, [], tacticSlots.creation],
+    ["set_tactical_style", "一键读取或切换当前战术的官方预设风格（控制球权/高位压迫/密集短传/双翼齐飞/长传冲吊/灵活防反/快速防反/链式防守/摆大巴等），不传 style 则只读返回全部可选风格与本队推荐 TOP3；传入风格 ID 或中英文名则直接切换并同步预设球队指令，独立读回验证。", { style: { description: "目标战术风格 ID（0-10）或中英文名称（如 '高位压迫'、'快速防反'、'gegenpress'）；不传则只读查询" }, previewOnly: { type: "boolean", default: false } }, [], tacticSlots.setStyle],
     ["create_tactic", "提交预览过的风格及两种阵型，调用游戏原生创建，新战术使用游戏分配的空槽。槽数增加由独立订阅读回。", tacticCreationArgs,
       ["tacticalStyle", "inPossessionFormation", "outOfPossessionFormation", "expectedChoiceToken", "operationId"], tacticSlots.create],
     ["list_tactic_files", "从游戏实际的 AddOnsList 读取默认保存方式下的战术文件候选。", {}, [], tacticSlots.files],
@@ -585,6 +586,21 @@ export function createExtendedTools(call) {
     ["manage_dof_target_group", "创建、重命名或删除总监转会目标组（create/rename/delete）。", { action: { type: "string", enum: ["create", "rename", "delete"], default: "create" }, name: text, groupIndex: { type: "integer", minimum: 0, default: 0 }, operationId: text }, [], dofFollow.manageDofTargetGroup],
     ["get_holiday_status", "只读读取当前经理是否处于休假状态、返岗时间及度假配置草稿。", {}, [], managerHoliday.getHolidayStatus],
     ["manage_holiday", "设置经理假期（go）或提前结束假期（return）并独立读回 IsOnHoliday 校验（MGR-O15d/e）。", { action: { type: "string", enum: ["go", "return"], default: "go" }, returnDateType: { type: "integer", minimum: 0 }, returnNumberDays: { type: "integer", minimum: 1 }, useCurrentTactics: { type: "boolean" }, useTeamSelection: { type: "boolean" }, applyForJobs: { type: "boolean" }, operationId: text }, [], managerHoliday.manageHoliday],
+    ["search_players", "多条件搜索游戏球员数据库（HumanPersonSearch.PersonList），支持按姓名、位置（支持中英文如 ST/DC/DM/门将/后卫）、年龄区间、国籍、俱乐部、仅自由球员、身高区间过滤与排序，返回紧凑球员列表。", {
+      name: text,
+      position: text,
+      minAge: { type: "integer", minimum: 14 },
+      maxAge: { type: "integer", minimum: 14 },
+      nationality: text,
+      club: text,
+      freeAgentOnly: { type: "boolean", default: false },
+      minHeight: { type: "integer", minimum: 140 },
+      maxHeight: { type: "integer", minimum: 140 },
+      sortBy: { type: "string", enum: ["default", "age_asc", "age_desc", "height_desc"], default: "default" },
+      scanLimit: { type: "integer", minimum: 1, maximum: 350, default: 150 },
+      limit: { type: "integer", minimum: 1, maximum: 40, default: 15 },
+      searchType: { type: "integer", minimum: 0, default: 1 }
+    }, [], playerSearchFilter.searchPlayers],
     ["get_player_search_filter_options", "只读读取球员搜索管理选项及过滤器可用状态（REC-O29）。", {}, [], playerSearchFilter.getSearchFilterOptions],
     ["manage_player_search_filter", "保存（save）、重用载入（load）或删除/重置（delete/reset）保存的球员搜索过滤条件（REC-O29a/b/c）。", { action: { type: "string", enum: ["save", "load", "reset", "delete"], default: "save" }, scopeKind: { type: "string", enum: ["filter", "attributes", "conditions"], default: "filter" }, name: text, operationId: text }, [], playerSearchFilter.managePlayerSearchFilter],
     ["get_development_advice", "只读读取发展中心建议数据、会议状态与建议文本（TRN-O26）。", {}, [], developmentAdvice.getDevelopmentAdvice],

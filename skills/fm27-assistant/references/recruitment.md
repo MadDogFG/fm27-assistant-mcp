@@ -4,7 +4,7 @@
 
 ## 核心能力范围
 - **球探与招募重点（Recruitment Focus）**：读取/创建/配置/提交/结束/重启/删除招募重点，调整考察赛事/地区树、指派球探与分析师、处理球探中心报告与请求更新。
-- **球员搜索与候选名单**：按条件检索数据库球员、保存/载入/删除搜索过滤条件（`manage_player_search_filter`），管理多个短名单（创建/重命名/删除/移入/移出）。
+- **球员搜索与候选名单**：按多条件（姓名/位置中英文/年龄区间/国籍/俱乐部/仅自由球员/身高区间）检索数据库球员并排序（`search_players`），保存/载入/删除搜索过滤条件（`manage_player_search_filter`），管理多个短名单（创建/重命名/删除/移入/移出）。
 - **转会、租借与合同草稿**：
   - 发起或预览转会/租借报价，编辑转会费、分期、附加条款、出场/位置要求及工资分担比例（`open_transfer_offer_draft`, `stage_transfer_clause`, `change_transfer_structure`），填好后用 `get_negotiation_actions` + `execute_negotiation_action` 直接提交报价。
   - 发起续约或自由球员签约谈判，配置年限、薪资、奖金、解约金条款与签约前承诺（`open_contract_draft`, `stage_contract_term`, `change_contract_structure`）。本队球员可直接传 `squadIndex`（无需手传 `source` 句柄）：

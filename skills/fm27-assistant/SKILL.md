@@ -37,8 +37,8 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
   -> 调 `get_league_table_and_fixtures`。
 - **“看看球队士气、更衣室大佬是谁、有没有闹情绪的”**
   -> 调 `get_squad_dynamics_and_hierarchy` + `get_squad_happiness_issues`。
-- **“下场打谁 / 对手有什么弱点 / 怎么调整战术”**
-  -> 先调 `get_pre_match_briefing`（仅 ~500B 极省 Token，一次看全联赛名次、下场对手、当前心态、未读消息与体能/士气预警），再按需调 `get_opposition_scout_report` 与 `get_opposition_instructions`（含对手姓名与球衣号）。
+- **“下场打谁 / 对手有什么弱点 / 怎么调整战术 / 一键换预设风格”**
+  -> 先调 `get_pre_match_briefing`（仅 ~500B 极省 Token，一次看全联赛名次、下场对手、当前心态、未读消息与体能/士气预警）；想一键切换官方预设风格（控制球权/高位压迫/密集短传/快速防反/摆大巴等）直接调 `set_tactical_style`（不传参数可看全部风格与本队推荐 TOP3）；再按需调 `get_opposition_scout_report` 与 `get_opposition_instructions`（含对手姓名与球衣号）。
 - **“今天收件箱有啥事 / 帮我过一天”**
   -> 调 `get_inbox`，纯通知可直接一键调 `mark_all_messages_read({})`（无需先预览 token），想过天调 `fm_continue_game({ action: "continue" })`（若遇 `processing_card_timer_active` 等待 2 秒再读即可）。
 - **“俱乐部老板对我们有啥要求 / 还有多少钱买人”**
@@ -49,8 +49,8 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
   -> 调 `get_team_training_schedules` 看训练表，`set_team_training_intensity` 调强度/自动休息；结合 `get_squad_snapshot` 看体能。
 - **“帮我排首发、选队长、分球衣号码”**
   -> 调 `get_lineup_options` 排首发，`get_captain_options` / `set_captain` 选正副队长，`get_squad_number_options` / `change_squad_numbers` 分号码。
-- **“我想买人/租借/续约，看看球探和候选名单”**
-  -> 调 `get_scouting_knowledge_and_reports`、`list_shortlists` 看候选；谈判与报价流程先翻 [recruitment.md](references/recruitment.md)（条款确认后可直接用 `get_negotiation_actions` + `execute_negotiation_action` 提交）。
+- **“我想买人/租借/续约/按条件搜自由球员或免签目标”**
+  -> 按多条件（位置/年龄/国籍/俱乐部/仅自由球员/身高）搜数据库球员直接调 `search_players`；看球探与候选调 `get_scouting_knowledge_and_reports`、`list_shortlists`；谈判与报价流程先翻 [recruitment.md](references/recruitment.md)（条款确认后可直接用 `get_negotiation_actions` + `execute_negotiation_action` 提交）。
 - **“业务工具没覆盖的冷门字段（如租借工资分担、合同条款细节、某面板原生属性）”**
   -> 先用 `live_describe` 自省节点有哪些属性名（别盲猜），再用 `live_query` 结构化读取（严格只读、自动管理订阅与引用解析）。
 

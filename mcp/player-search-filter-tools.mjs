@@ -1,8 +1,179 @@
-import { createLiveClient, scalar } from "./live-client.mjs";
+import { createLiveClient, scalar, clean } from "./live-client.mjs";
 
-// 保存的球员搜索与过滤器管理（REC-O29a 保存、REC-O29b 重用、REC-O29c 删除/重置）
+// 清理 FM 原生富文本超链接标记与零宽字符
+const cleanText = v => clean(v).replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+
+// 位置中英文同义词映射表，支持模糊过滤
+const POSITION_SYNONYMS = {
+  gk: ["门将", "守门员", "gk"],
+  dc: ["中卫", "后卫 (中)", "后卫(中)", "中后卫", "dc", "cb"],
+  cb: ["中卫", "后卫 (中)", "后卫(中)", "中后卫", "dc", "cb"],
+  dl: ["左后卫", "后卫 (左)", "后卫(左)", "边后卫 (左)", "dl", "lb"],
+  dr: ["右后卫", "后卫 (右)", "后卫(右)", "边后卫 (右)", "dr", "rb"],
+  def: ["后卫", "边后卫", "中卫", "def", "cb", "lb", "rb", "wb"],
+  wb: ["边后卫", "翼卫", "wb"],
+  dm: ["后腰", "防守型中场", "dm", "cdm"],
+  mc: ["中场 (中)", "中场(中)", "中前卫", "中场", "mc", "cm"],
+  mid: ["中场", "后腰", "前腰", "mid"],
+  am: ["前腰", "进攻型中场", "am", "cam"],
+  aml: ["左边锋", "进攻型中场 (左)", "边锋 (左)", "aml", "lw"],
+  amr: ["右边锋", "进攻型中场 (右)", "边锋 (右)", "amr", "rw"],
+  winger: ["边锋", "进攻型中场 (左)", "进攻型中场 (右)", "中场 (左)", "中场 (右)", "winger", "lw", "rw"],
+  st: ["前锋", "中锋", "射手", "st", "cf", "fw"]
+};
+
+function matchesPosition(posText, query) {
+  if (!query) return true;
+  const normalizedPos = cleanText(posText).toLowerCase();
+  const q = cleanText(query).toLowerCase();
+  if (normalizedPos.includes(q)) return true;
+  const syns = POSITION_SYNONYMS[q];
+  if (syns) return syns.some(s => normalizedPos.includes(s.toLowerCase()));
+  return false;
+}
+
+// 保存的球员搜索与过滤器管理（REC-O29a 保存、REC-O29b 重用、REC-O29c 删除/重置）+ 多条件数据库搜索
 export function createPlayerSearchFilterTools(call) {
   const client = createLiveClient(call);
+
+  // 多条件数据库球员搜索：基于 HumanPersonSearch.PersonList 并发扫描与精准筛选
+  async function searchPlayers({
+    searchType = 1,
+    name = "",
+    position = "",
+    minAge,
+    maxAge,
+    nationality = "",
+    club = "",
+    freeAgentOnly = false,
+    minHeight,
+    maxHeight,
+    sortBy = "default",
+    scanLimit = 150,
+    limit = 15
+  } = {}) {
+    const safeLimit = Math.max(1, Math.min(40, Number(limit) || 15));
+    const safeScan = Math.max(1, Math.min(350, Number(scanLimit) || 150));
+    const nameQ = cleanText(name).toLowerCase();
+    const posQ = cleanText(position);
+    const natQ = cleanText(nationality).toLowerCase();
+    const clubQ = cleanText(club).toLowerCase();
+    const needHeight = Number.isFinite(Number(minHeight)) || Number.isFinite(Number(maxHeight)) || sortBy === "height_desc";
+    const needFullScan = sortBy !== "default";
+
+    return client.scope(async scope => {
+      const team = await scope.subscribeOptional("human", "Team");
+      const ctx = team.handle
+        ? { human: { source: "human" }, Human: { source: "human" }, team: { source: team.handle }, Team: { source: team.handle }, Type: searchType, type: searchType }
+        : { human: { source: "human" }, Human: { source: "human" }, Type: searchType, type: searchType };
+      const personSearch = await scope.subscribeOptional("human", "HumanPersonSearch", ctx, 1500);
+      if (!personSearch.handle) {
+        return { ok: false, error: "当前存档未开放 HumanPersonSearch 球员搜索数据库。" };
+      }
+      const pl = await scope.subscribeOptional(personSearch.handle, "PersonList", ctx, 1500);
+      const totalInDatabase = pl.read?.value?.count ?? (pl.read?.value?.items?.length || 0);
+      const toScan = Math.min(totalInDatabase, safeScan);
+
+      const matched = [];
+      let scanned = 0;
+      const batchSize = 10;
+
+      for (let start = 0; start < toScan; start += batchSize) {
+        const end = Math.min(toScan, start + batchSize);
+        const batchIndices = [];
+        for (let i = start; i < end; i++) batchIndices.push(i);
+
+        const batchRows = await Promise.all(batchIndices.map(async idx => {
+          const pRef = { source: pl.handle, path: String(idx) };
+          const pCtx = { ...ctx, Person: pRef };
+          const tasks = [
+            scope.readAndRelease(pRef, "Name", pCtx, 600),
+            scope.readAndRelease(pRef, "Age", pCtx, 600),
+            scope.readAndRelease(pRef, "BestPositionShortString", pCtx, 600),
+            scope.readAndRelease(pRef, "NationalityText", pCtx, 600),
+            scope.subscribeOptional(pRef, "Club", pCtx, 600)
+          ];
+          if (needHeight) tasks.push(scope.readAndRelease(pRef, "Height", pCtx, 600));
+          const res = await Promise.all(tasks);
+          const [nameR, ageR, posR, natR, clubSub] = res;
+          const heightR = needHeight ? res[5] : null;
+
+          const pName = cleanText(nameR.scalar || "");
+          const pAge = Number.parseInt(ageR.scalar, 10);
+          const pPos = cleanText(posR.scalar || "");
+          const pNat = cleanText(natR.scalar || "");
+          const isFreeAgent = !clubSub.handle || clubSub.read?.value?.type === "SI.Bindable.NullReference";
+          const pHeight = heightR?.ok ? Number.parseInt(heightR.scalar, 10) : null;
+
+          // 按轻量字段优先过滤，减少不必要的 Club.Name 二次读取
+          let pass = Boolean(pName);
+          if (pass && nameQ && !pName.toLowerCase().includes(nameQ)) pass = false;
+          if (pass && posQ && !matchesPosition(pPos, posQ)) pass = false;
+          if (pass && Number.isFinite(Number(minAge)) && (!Number.isFinite(pAge) || pAge < Number(minAge))) pass = false;
+          if (pass && Number.isFinite(Number(maxAge)) && (!Number.isFinite(pAge) || pAge > Number(maxAge))) pass = false;
+          if (pass && natQ && !pNat.toLowerCase().includes(natQ)) pass = false;
+          if (pass && freeAgentOnly && !isFreeAgent) pass = false;
+          if (pass && Number.isFinite(Number(minHeight)) && (!Number.isFinite(pHeight) || pHeight < Number(minHeight))) pass = false;
+          if (pass && Number.isFinite(Number(maxHeight)) && (!Number.isFinite(pHeight) || pHeight > Number(maxHeight))) pass = false;
+
+          let clubName = isFreeAgent ? "自由球员" : null;
+          if (pass && !isFreeAgent && clubSub.handle) {
+            const cn = await scope.readAndRelease(clubSub.handle, "Name", pCtx, 500);
+            clubName = cleanText(cn.scalar || "") || "有约在身";
+          }
+          if (clubSub.handle) await scope.release(clubSub.handle).catch(() => {});
+
+          if (pass && clubQ && !(clubName || "").toLowerCase().includes(clubQ)) pass = false;
+          if (!pass) return null;
+
+          return {
+            searchIndex: idx,
+            name: pName,
+            age: Number.isFinite(pAge) ? pAge : null,
+            position: pPos || null,
+            nationality: pNat || null,
+            club: clubName,
+            freeAgent: isFreeAgent,
+            ...(Number.isFinite(pHeight) ? { heightCm: pHeight } : {})
+          };
+        }));
+
+        scanned += batchIndices.length;
+        for (const r of batchRows) {
+          if (r) matched.push(r);
+        }
+        // 不要求全局排序时，命中数量足够即可提前终止扫描提速
+        if (!needFullScan && matched.length >= safeLimit) break;
+      }
+
+      if (sortBy === "age_asc") matched.sort((a, b) => (a.age ?? 99) - (b.age ?? 99));
+      else if (sortBy === "age_desc") matched.sort((a, b) => (b.age ?? 0) - (a.age ?? 0));
+      else if (sortBy === "height_desc") matched.sort((a, b) => (b.heightCm ?? 0) - (a.heightCm ?? 0));
+
+      const players = matched.slice(0, safeLimit);
+      return {
+        ok: true,
+        readOnly: true,
+        totalInDatabase,
+        scanned,
+        matchedCount: matched.length,
+        returnedCount: players.length,
+        filters: {
+          name: nameQ || null,
+          position: posQ || null,
+          minAge: minAge ?? null,
+          maxAge: maxAge ?? null,
+          nationality: natQ || null,
+          club: clubQ || null,
+          freeAgentOnly: Boolean(freeAgentOnly),
+          minHeight: minHeight ?? null,
+          maxHeight: maxHeight ?? null,
+          sortBy
+        },
+        players
+      };
+    });
+  }
 
   // 只读读取当前球员搜索数据库、原生筛选、分页列表与可选过滤器状态（REC-R01 / REC-O29）
   async function getSearchFilterOptions({ searchType = 1, skip = 0, limit = 10 } = {}) {
@@ -114,5 +285,5 @@ export function createPlayerSearchFilterTools(call) {
     };
   }
 
-  return { getSearchFilterOptions, managePlayerSearchFilter };
+  return { searchPlayers, getSearchFilterOptions, managePlayerSearchFilter };
 }

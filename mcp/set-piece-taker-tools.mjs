@@ -13,7 +13,8 @@ export function createSetPieceTakerTools(call) {
         FilterListID: 0, SelectedObjectList: [], ...(args.contexts || {}), human, Human: human, team: teamRef, Team: teamRef, Boolean: true,
         SetPieceType: Number.isInteger(args.setPieceType) ? args.setPieceType : 0,
         SetPiecePitchSide: Number.isInteger(args.setPiecePitchSide) ? args.setPiecePitchSide : 0,
-        SetPieceScenario: Number.isInteger(args.setPieceScenario) ? args.setPieceScenario : 0
+        // 进攻定位球主罚位于 SetPieceScenario=1（0 为防守站位无主罚手），默认使用 1
+        SetPieceScenario: Number.isInteger(args.setPieceScenario) ? args.setPieceScenario : 1
       };
       const setpiece = await scope.subscribe(tactic.handle, "SetPiece", contexts);
       return perform(scope, { team: team.handle, tactic: tactic.handle, setpiece: setpiece.handle }, contexts, tactic);
@@ -49,11 +50,11 @@ export function createSetPieceTakerTools(call) {
     }
     return query;
   }
-  function moveOrder(value, action) {
-    const list = action === "move" ? value?.fields?.["0x38435761"] : value;
+  function takerIds(value, isSideRecord) {
+    const list = isSideRecord ? value?.fields?.["0x38435761"] : value;
     if (list?.kind !== "list" || list.truncated) return null;
-    const identities = list.items.map(row => row.fields?.["0x706c7972"]?.identity);
-    return identities.every(Boolean) && new Set(identities).size === identities.length ? identities : null;
+    const identities = list.items.map(row => row.fields?.["0x706c7972"]?.identity || row.identity);
+    return identities.every(Boolean) ? identities : null;
   }
 
   return {
@@ -62,7 +63,7 @@ export function createSetPieceTakerTools(call) {
         ok: true,
         values: await readAll(scope, base, contexts),
         liveVerified: false,
-        note: "只读模式下未选中具体球员（SelectedObjectList 为空），因此 CanAddToLeftFootTakers/CanAddToRightFootTakers 为 False 属正常现象，不代表游戏禁止添加或需要切到定位球页面。请从 SetPieceTakerAddPlayerList 选出球员下标后，直接带 action='add-left'|'add-right'|'add-both' 与 playerPaths:['下标'] 调用本工具预览（无需切页）。"
+        note: "只读模式下未选中具体球员（SelectedObjectList 为空），因此 CanAddToLeftFootTakers/CanAddToRightFootTakers 为 False 属正常现象，不代表游戏禁止添加或需要切到定位球页面。默认读取进攻定位球（setPieceScenario=1）；请从 SetPieceTakerAddPlayerList 选出球员下标后，直接带 action='add-left'|'add-right'|'add-both'|'remove'|'move' 与 playerPaths:['下标'] 调用本工具预览（无需切页）。"
       };
       const query = await prepare(scope, base, contexts, args);
       return scope.api("/api/v1/setpiece-takers/preview", query);
@@ -73,23 +74,43 @@ export function createSetPieceTakerTools(call) {
         const query = await prepare(scope, base, contexts, args);
         const preview = await scope.api("/api/v1/setpiece-takers/preview", query);
         if (preview.choiceToken !== args.expectedChoiceToken) throw new Error("主罚候选或当前战术已变化，请刷新。");
-        const moveHandle = args.action === "move" ? query.takerList : args.action === "penalty-move" ? query.penalties : null;
-        const before = moveHandle && moveOrder((await scope.ready(moveHandle)).value, args.action);
+        const isSideAction = ["add-left", "add-right", "add-both", "remove", "move"].includes(args.action);
+        const isPenaltyAction = ["penalty-add", "penalty-remove", "penalty-move", "penalty-quick-pick"].includes(args.action);
+        // add-right 默认写入 SetPiecePitchSide=1（右路），add-left 默认写入 SetPiecePitchSide=0（左路）
+        let watchHandle = isPenaltyAction ? query.penalties : query.takerList;
+        if (args.action === "add-left" && contexts.SetPiecePitchSide !== 0) {
+          watchHandle = (await scope.subscribe(base.setpiece, "SetPieceTakerDataForSide", { ...contexts, SetPiecePitchSide: 0 })).handle;
+        } else if (args.action === "add-right" && contexts.SetPiecePitchSide !== 1) {
+          watchHandle = (await scope.subscribe(base.setpiece, "SetPieceTakerDataForSide", { ...contexts, SetPiecePitchSide: 1 })).handle;
+        }
+        const before = (isSideAction || isPenaltyAction) ? takerIds((await scope.ready(watchHandle)).value, isSideAction) : null;
         const receipt = await scope.api("/api/v1/setpiece-takers/execute", { ...query, id: args.operationId, choiceToken: args.expectedChoiceToken }, true);
         if (!before || !receipt.ok) return { ...receipt, takerConfigurationVerified: false };
-        const expected = [...before];
-        const [moved] = expected.splice(Number(query.paths[0]), 1);
-        expected.splice(query.destination, 0, moved);
+
+        let expected = null;
+        if (args.action === "move" || args.action === "penalty-move") {
+          expected = [...before];
+          const [moved] = expected.splice(Number(query.paths[0]), 1);
+          expected.splice(query.destination, 0, moved);
+        }
         try {
           let after;
-          for (let attempt = 0; attempt < 5; attempt++) {
-            if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 150));
-            after = moveOrder((await scope.ready(moveHandle)).value, args.action);
-            if (after?.length === expected.length && after.every((identity, index) => identity === expected[index])) {
-              return { ...receipt, takerConfigurationVerified: true, orderObservation: { before, expected, after } };
+          for (let attempt = 0; attempt < 6; attempt++) {
+            if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 180));
+            after = takerIds((await scope.ready(watchHandle)).value, isSideAction);
+            if (!after) continue;
+            const ok = expected
+              ? after.length === expected.length && after.every((id, idx) => id === expected[idx])
+              : (args.action === "remove" || args.action === "penalty-remove")
+                ? after.length < before.length
+                : (args.action === "add-left" || args.action === "add-right" || args.action === "add-both" || args.action === "penalty-add")
+                  ? after.length > before.length
+                  : JSON.stringify(after) !== JSON.stringify(before);
+            if (ok) {
+              return { ...receipt, takerConfigurationVerified: true, orderObservation: { before, ...(expected ? { expected } : {}), after } };
             }
           }
-          return { ...receipt, takerConfigurationVerified: false, orderObservation: { before, expected, after } };
+          return { ...receipt, takerConfigurationVerified: false, orderObservation: { before, ...(expected ? { expected } : {}), after } };
         } catch (error) {
           return { ...receipt, takerConfigurationVerified: false, observationError: String(error.message || error) };
         }
