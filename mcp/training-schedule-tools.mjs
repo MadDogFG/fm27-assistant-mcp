@@ -36,7 +36,7 @@ export function createTrainingScheduleTools(call) {
           ? await scope.subscribe(calendar.handle, "TodayMonthIndex", baseContexts)
           : await scope.subscribe(calendar.handle, "MonthsDropdown", baseContexts);
         const contexts = { ...baseContexts, MonthIndex: { valueSource: month.handle, path: args.monthPath } };
-        const weeks = await scope.subscribe(calendar.handle, "TrainingScheduleWeeks", contexts);
+        const weeks = await scope.subscribe(calendar.handle, "TrainingScheduleWeeks", contexts, 2500);
         const date = await scope.subscribe({ source: weeks.handle, path: args.weekPath }, "WeekStartDate", contexts);
         contexts.Date = { valueSource: date.handle };
         const categories = await scope.subscribe(calendar.handle, "TrainingScheduleCategoryDropdown", contexts);

@@ -24,6 +24,8 @@ public static class LiveTools
     {
         public Bindings.Key Key;
         public Bindings.Key Root;
+        public ulong Sequence;
+        public string Handle;
         public string Source;
         public string SourcePath;
         public string Identity;
@@ -33,11 +35,17 @@ public static class LiveTools
         public DateTime? Updated;
         public Dictionary<string, string> Contexts = new();
         public Dictionary<string, string> ContextDescriptions = new();
+        // 记录所有依赖的父句柄（source 与 contexts 引用的频道），防止子频道未就绪时误释放父频道导致原生野指针崩溃
+        public HashSet<string> DependencyHandles = new(StringComparer.Ordinal);
+        public bool Tainted;
         public int Pins;
         public bool CloseRequested;
     }
 
     private static readonly Dictionary<string, Channel> Channels = new();
+    private static readonly Dictionary<ulong, Channel> ChannelsByKey = new();
+    // 存放因未收到回调或名下有未就绪子频道而延迟清理的频道，保留托管对象引用避免原生 UAF
+    private static readonly Dictionary<ulong, Channel> AbandonedByKey = new();
     private static Bindings.ValueChangedCallback Callback;
     private static GameInteropSubsystem Interop;
     private static ulong NextKey = 0xfaa5000000000000UL;
@@ -193,14 +201,42 @@ public static class LiveTools
     {
         try
         {
-            foreach (var channel in Channels.Values)
+            if (ChannelsByKey.TryGetValue(key.m_key, out var channel))
             {
-                if (channel.Key.m_key != key.m_key) continue;
                 var copy = value == null ? null : TypedValue.CreateCopyFrom(value);
-                channel.Value?.Dispose();
+                var previous = channel.Value;
                 channel.Value = copy;
                 channel.Revision++;
                 channel.Updated = DateTime.UtcNow;
+                // 仅当频道未被 Pin 且未被污染时才主动释放旧值，避免并发读/悬空子引用踩到已释放原生内存
+                if (previous != null && channel.Pins == 0 && !channel.Tainted)
+                {
+                    try { previous.Dispose(); } catch { }
+                }
+                return;
+            }
+
+            // 若某个曾因未就绪被跳过解绑的频道迟到收到了原生回调，在下一帧安全回收绑定节点
+            if (AbandonedByKey.TryGetValue(key.m_key, out var abandoned) && !abandoned.Tainted)
+            {
+                AbandonedByKey.Remove(key.m_key);
+                abandoned.Updated = DateTime.UtcNow;
+                MainThread.Enqueue(() =>
+                {
+                    try
+                    {
+                        var bindings = BindingTools.GetBindings();
+                        var k = abandoned.Key;
+                        var r = abandoned.Root;
+                        bindings.Unbind(ref k, Callback);
+                        bindings.Remove(ref r);
+                        Diagnostics.Log("abandoned_late_cleanup " + abandoned.Handle);
+                    }
+                    catch (Exception ex)
+                    {
+                        Diagnostics.Log("abandoned_late_cleanup_fail " + abandoned.Handle + ": " + ex.Message);
+                    }
+                });
             }
         }
         catch (Exception ex) { EventLog.Add("error", "live response: " + ex.Message); }
@@ -359,10 +395,25 @@ public static class LiveTools
         var contextObject = contextDocument.RootElement;
         if (contextObject.ValueKind != JsonValueKind.Object) throw new ArgumentException("contexts must be an object.");
         var contextValues = new Dictionary<string, TypedValue>();
+        var dependencyHandles = new HashSet<string>(StringComparer.Ordinal);
+        if (!string.IsNullOrEmpty(source) && Channels.ContainsKey(source)) dependencyHandles.Add(source);
         for (var i = 0; i < required.Count; i++)
         {
             var contextName = required[i].ToString().Split(':')[0];
             if (!contextObject.TryGetProperty(contextName, out var item)) throw new ArgumentException("Missing required context: " + contextName);
+            if (item.ValueKind == JsonValueKind.Object)
+            {
+                if (item.TryGetProperty("valueSource", out var vsDep))
+                {
+                    var dep = vsDep.GetString();
+                    if (!string.IsNullOrEmpty(dep) && Channels.ContainsKey(dep)) dependencyHandles.Add(dep);
+                }
+                else if (item.TryGetProperty("source", out var srcDep))
+                {
+                    var dep = srcDep.GetString();
+                    if (!string.IsNullOrEmpty(dep) && Channels.ContainsKey(dep)) dependencyHandles.Add(dep);
+                }
+            }
             contextValues[contextName] = item.ValueKind switch
             {
                 JsonValueKind.Null => TypedValue.Null,
@@ -394,13 +445,15 @@ public static class LiveTools
         var relative = GameTools.MakeSpan(name);
         var key = bindings.Create(ref root, ref relative, Bindings.NodeFlags.None);
         var handle = "s" + SessionId + "e" + Epoch + "c" + NextKey.ToString("x16");
-        var channel = new Channel { Key = key, Root = root, Source = source, SourcePath = path ?? "",
+        var channel = new Channel { Key = key, Root = root, Sequence = NextKey, Handle = handle, Source = source, SourcePath = path ?? "",
             Identity = reference.TryCast<InteropReference>()?.GetPersistentIdentity(), Property = property,
             Contexts = contextValues.ToDictionary(pair => pair.Key, pair => pair.Value.AsString()),
-            ContextDescriptions = contextValues.ToDictionary(pair => pair.Key, pair => JsonText(DescribeValue(pair.Value))) };
+            ContextDescriptions = contextValues.ToDictionary(pair => pair.Key, pair => JsonText(DescribeValue(pair.Value))),
+            DependencyHandles = dependencyHandles };
         Channels.Add(handle, channel);
+        ChannelsByKey[key.m_key] = channel;
         try { bindings.Bind(ref key, bindings.TryCast<Il2CppSystem.Object>(), Callback); }
-        catch (Exception ex) { Channels.Remove(handle); bindings.Remove(ref root); Diagnostics.Log("open_fail " + name + " " + source + "/" + (path ?? "") + ": " + ex.GetType().Name + " " + ex.Message); throw; }
+        catch (Exception ex) { Channels.Remove(handle); ChannelsByKey.Remove(key.m_key); bindings.Remove(ref root); Diagnostics.Log("open_fail " + name + " " + source + "/" + (path ?? "") + ": " + ex.GetType().Name + " " + ex.Message); throw; }
         Diagnostics.Log("open " + name + " " + source + "/" + (path ?? "") + " handle=" + handle + " contexts=" + string.Join(",", contextValues.Keys));
         if (transient) _ = Expire(handle);
         return new(true, "subscribed", handle, Epoch, SourceDescription(reference), name, key.m_key.ToString("x16"));
@@ -465,17 +518,42 @@ public static class LiveTools
         finally { seen.Remove(raw.Pointer); }
     }
 
+    private static void MarkAncestorsTainted(Channel channel, HashSet<string> visited = null)
+    {
+        visited ??= new HashSet<string>(StringComparer.Ordinal);
+        foreach (var dep in channel.DependencyHandles)
+        {
+            if (!visited.Add(dep)) continue;
+            if (Channels.TryGetValue(dep, out var parent))
+            {
+                parent.Tainted = true;
+                MarkAncestorsTainted(parent, visited);
+            }
+        }
+    }
+
     public static object Close(string handle)
     {
         if (!Channels.TryGetValue(handle ?? "", out var channel)) throw new ArgumentException("Unknown or expired channel handle.");
-        // A channel that never produced a value may still hold a binding to a null/dynamic
-        // reference; touching the native binding for it is where native crashes showed up.
-        // Drop it from the bookkeeping instead of unbinding, and never resolve its value.
+        // 未收到回调的子频道跳过原生 Unbind/Remove 时，必须同时污染其所有祖先频道，
+        // 严禁随后 Dispose 父频道的 TypedValue 或移除父绑定节点，彻底杜绝原生 Use-After-Free 闪退。
         if (!channel.Updated.HasValue)
         {
+            MarkAncestorsTainted(channel);
             Diagnostics.Log("close_skip_unupdated " + handle);
             Channels.Remove(handle);
+            ChannelsByKey.Remove(channel.Key.m_key);
+            if (AbandonedByKey.Count < 512) AbandonedByKey[channel.Key.m_key] = channel;
             return new { ok = true, status = "closed_without_value", handle };
+        }
+        if (channel.Tainted)
+        {
+            MarkAncestorsTainted(channel);
+            Diagnostics.Log("close_defer_tainted_parent " + handle);
+            Channels.Remove(handle);
+            ChannelsByKey.Remove(channel.Key.m_key);
+            if (AbandonedByKey.Count < 512) AbandonedByKey[channel.Key.m_key] = channel;
+            return new { ok = true, status = "closed_deferred_tainted_parent", handle };
         }
         if (channel.Pins > 0)
         {
@@ -486,6 +564,7 @@ public static class LiveTools
         try { bindings.Unbind(ref channel.Key, Callback); bindings.Remove(ref channel.Root); }
         catch (Exception ex) { Diagnostics.Log("close_fail " + handle + ": " + ex.GetType().Name + " " + ex.Message); }
         Channels.Remove(handle);
+        ChannelsByKey.Remove(channel.Key.m_key);
         channel.Value?.Dispose();
         Diagnostics.Log("close " + handle);
         return new { ok = true, status = "closed", handle };
@@ -493,12 +572,19 @@ public static class LiveTools
 
     public static void Reset()
     {
-        foreach (var handle in Channels.Keys.ToArray())
+        // 先标记所有未就绪频道的祖先，再按创建顺序倒序（先子后父）关闭，避免 Reset 期间先释放父节点
+        foreach (var ch in Channels.Values)
         {
-            try { Channels[handle].Pins = 0; Close(handle); }
+            if (!ch.Updated.HasValue || ch.Tainted) MarkAncestorsTainted(ch);
+        }
+        foreach (var pair in Channels.OrderByDescending(p => p.Value.Sequence).ToArray())
+        {
+            try { pair.Value.Pins = 0; Close(pair.Key); }
             catch (Exception ex) { EventLog.Add("error", "close live channel: " + ex.Message); }
         }
         Channels.Clear();
+        ChannelsByKey.Clear();
+        AbandonedByKey.Clear();
         Epoch++;
     }
 

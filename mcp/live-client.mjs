@@ -40,10 +40,12 @@ export function createLiveClient(call) {
 
   async function ready(handle, path, timeoutMs = 7000) {
     const until = Date.now() + timeoutMs;
+    let polls = 0;
     do {
       const result = await api("/api/v1/live/read", { handle, path, depth: 6 });
       if (result.status === "ready") return result;
-      await sleep(60);
+      // 渐进退避轮询：前 5 次 50ms 保证热路径低延迟，随后放宽至 150ms 避免未就绪频道压迫游戏主线程
+      await sleep(++polls <= 5 ? 50 : 150);
     } while (Date.now() < until);
     throw new Error("游戏数据未就绪，尚未执行操作。");
   }
@@ -170,8 +172,19 @@ export function createLiveClient(call) {
       const human = { source: "human" }, teamRef = { source: team.handle };
       const useMatch = match.inMatch && !match.pastMatch && !match.replay && !match.finished && !match.spectating;
       const contexts = { Boolean: true, human, Human: human, team: teamRef, Team: teamRef };
-      const current = await subscribe(useMatch ? "match" : team.handle, "Tactic", contexts);
-      return { team, tactic: current, match, contexts };
+      // 正常情况下 Tactic 频道在 20ms 内即返回；收紧超时至 3000ms，避免游戏停留在战术面板占用通道时长时间反复轮询
+      try {
+        const current = await subscribe(useMatch ? "match" : team.handle, "Tactic", contexts, 3000);
+        return { team, tactic: current, match, contexts };
+      } catch (error) {
+        if (/游戏数据未就绪/.test(String(error?.message || error))) {
+          const wrapped = new Error("战术数据通道暂未就绪（若游戏当前正打开战术面板，可能与插件读取冲突），请切回经理中心或稍后重试。");
+          wrapped.code = "tactic_channel_busy";
+          wrapped.hint = "请先在游戏内退出战术界面回到经理中心/概览页，然后再重试。";
+          throw wrapped;
+        }
+        throw error;
+      }
     }
     /**
      * 将 { source, path } 或 { squadIndex } 解析为实时球员引用（自动订阅本队 Players 列表并由 scope 统一释放）

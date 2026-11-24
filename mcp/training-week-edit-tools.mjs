@@ -25,7 +25,7 @@ export function createTrainingWeekEditTools(call) {
       const month = await scope.subscribe(calendar.handle, "TodayMonthIndex", contexts);
       const weeks = await scope.subscribe(calendar.handle, "TrainingScheduleWeeks", {
         ...contexts, MonthIndex: { valueSource: month.handle }
-      });
+      }, 2500);
       const row = { source: weeks.handle, path: String(args.weekIndex) };
       const date = await scope.subscribe(row, "WeekStartDate", contexts);
       const paste = await scope.subscribe(calendar.handle, "CanPasteTrainingWeek", {
