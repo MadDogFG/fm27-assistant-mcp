@@ -440,3 +440,94 @@ test("add_player_to_shortlist：全库搜人并精准定位目标候选名单与
   assert.equal(res.selectedPath, "U21速度体力引援 > 无限期");
   assert.equal(res.afterShortlists[0].countText, "1 名球员");
 });
+
+test("get_shortlist_players：跨名单静默切换读取非激活候选名单并自动还原原激活名单", async () => {
+  const { createShortlistManagementTools } = await import("../../mcp/shortlist-management-tools.mjs");
+  let seq = 0;
+  let activeIndex = 1; // 游戏当前激活的是 1(外援平替即战力)
+  const switchedTo = [];
+  const handleValues = new Map();
+  const propNamesById = new Map();
+
+  const mockCall = async (route, opts = {}) => {
+    const [pathname, qs = ""] = route.split("?");
+    const q = new URLSearchParams(qs);
+    if (pathname === "/api/v1/internal/event" && q.get("event") === "EventFmxSetActiveShortlist") {
+      activeIndex = JSON.parse(opts.body);
+      switchedTo.push(activeIndex);
+      return { ok: true };
+    }
+    if (pathname === "/api/v1/live/properties") {
+      const f = q.get("filter") || "";
+      if (!f) {
+        return {
+          ok: true,
+          properties: ["Name", "Age", "BestPositionShortString", "NationalityText", "Club", "Value", "Wage", "Pace", "Acceleration", "Stamina"]
+            .map((n, i) => ({ id: 500 + i, name: `${n}:mock`, contexts: [] }))
+        };
+      }
+      const id = ++seq;
+      propNamesById.set(id, f);
+      return { ok: true, properties: [{ id, name: `${f}:mock`, contexts: [] }] };
+    }
+    if (pathname === "/api/v1/live/open") {
+      const handle = `h_${++seq}`;
+      const propId = Number(q.get("property"));
+      const prop = propNamesById.get(propId) || "";
+      const pathArg = q.get("path") || "";
+      if (prop === "Team") {
+        handleValues.set(handle, { kind: "reference", type: "FM.UI.TeamReference" });
+      } else if (prop === "HumanShortlists") {
+        handleValues.set(handle, {
+          kind: "list",
+          count: 2,
+          items: [
+            { fields: { "0x696e6478": { value: "0" }, "0x5374726e": { value: "U21速度体力引援" }, "0x696d5856": { value: "2 名球员" }, "0x69734163": { value: activeIndex === 0 ? "True" : "False" } } },
+            { fields: { "0x696e6478": { value: "1" }, "0x5374726e": { value: "外援平替即战力" }, "0x696d5856": { value: "1 名球员" }, "0x69734163": { value: activeIndex === 1 ? "True" : "False" } } }
+          ]
+        });
+      } else if (prop === "HumanPersonSearch") {
+        handleValues.set(handle, { kind: "reference", type: "FM.UI.PersonSearchReference" });
+      } else if (prop === "PersonList") {
+        handleValues.set(handle, activeIndex === 0
+          ? { kind: "list", count: 2, items: [{ identity: "u21_1" }, { identity: "u21_2" }] }
+          : { kind: "list", count: 1, items: [{ identity: "fw_1" }] });
+      } else if (prop === "Name") {
+        const names = activeIndex === 0 ? ["张瑷晖", "范双杰"] : ["阿金昆米·阿莫"];
+        handleValues.set(handle, { kind: "scalar", value: names[Number(pathArg) || 0] || "未知俱乐部" });
+      } else if (prop === "Age") {
+        handleValues.set(handle, { kind: "scalar", value: "19" });
+      } else if (prop === "BestPositionShortString") {
+        handleValues.set(handle, { kind: "scalar", value: "后卫 (中)" });
+      } else if (prop === "NationalityText") {
+        handleValues.set(handle, { kind: "scalar", value: "中国" });
+      } else if (prop === "Club") {
+        handleValues.set(handle, { kind: "reference", type: "SI.Bindable.NullReference" });
+      } else if (prop === "Pace") {
+        handleValues.set(handle, { kind: "scalar", value: "14" });
+      } else if (prop === "Acceleration") {
+        handleValues.set(handle, { kind: "scalar", value: "13-15" });
+      } else if (prop === "Stamina") {
+        handleValues.set(handle, { kind: "scalar", value: "14" });
+      } else {
+        handleValues.set(handle, { kind: "scalar", value: "" });
+      }
+      return { ok: true, handle, reference: { type: "MockRef" } };
+    }
+    if (pathname === "/api/v1/live/read") {
+      return { ok: true, status: "ready", value: handleValues.get(q.get("handle")) ?? null };
+    }
+    if (pathname === "/api/v1/live/close") return { ok: true };
+    throw new Error(`未预期路由: ${route}`);
+  };
+
+  const tools = createShortlistManagementTools(mockCall);
+  const res = await tools.getShortlistPlayers({ shortlistName: "U21速度体力引援" });
+  assert.equal(res.ok, true);
+  assert.equal(res.shortlist.name, "U21速度体力引援");
+  assert.equal(res.returnedCount, 2);
+  assert.deepEqual(res.players.map(p => p.name), ["张瑷晖", "范双杰"]);
+  assert.equal(res.players[0].attributes.Pace, "14");
+  assert.equal(res.players[0].attributes.Acceleration, "13-15");
+  assert.deepEqual(switchedTo, [0, 1], "应先静默切到 0 读取，读完后自动切回原本激活的 1");
+});

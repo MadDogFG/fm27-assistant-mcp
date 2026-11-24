@@ -18,10 +18,192 @@ export function createShortlistManagementTools(call) {
         name: clean(f["0x5374726e"]?.value || ""),
         countText: clean(f["0x696d5856"]?.value || ""),
         isDefault: f["0x44767958"]?.value === "True",
-        isActive: f["0x69734163"]?.value === "True" || true,
+        isActive: f["0x69734163"]?.value === "True",
       };
     });
     return { count: sl.read?.value?.count ?? items.length, items, ctx, team };
+  }
+
+  // 从 "7 名球员" / "2 players" 等文本中提取人数，提取不到返回 null
+  function parseShortlistCount(countText) {
+    const m = String(countText || "").match(/(\d+)/);
+    return m ? Number.parseInt(m[1], 10) : null;
+  }
+
+  // 静默切换游戏当前激活短名单，并等待 HumanPersonSearch(Type=0) 刷新
+  async function setActiveShortlist(index, opPrefix) {
+    return call(
+      `/api/v1/internal/event?id=${encodeURIComponent(`${opPrefix}_${index}_${Date.now()}`)}&event=EventFmxSetActiveShortlist&source=human&apply=true`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(index) }
+    );
+  }
+
+  // 读取单个已激活短名单内的球员列表与核心考察属性
+  async function readActiveShortlistPlayers(scope, teamHandle, { expectedCount = null, includeAttributes = true, limit = 20 } = {}) {
+    const ctx0 = { human: { source: "human" }, Human: { source: "human" }, team: { source: teamHandle }, Team: { source: teamHandle }, Type: 0, type: 0 };
+    const ps0 = await scope.subscribeOptional("human", "HumanPersonSearch", ctx0, 1500);
+    if (!ps0.handle) throw new Error("候选名单搜索通道（HumanPersonSearch Type=0）暂未就绪。");
+    const pl = await scope.subscribeOptional(ps0.handle, "PersonList", ctx0, 1200);
+    if (!pl.handle) {
+      await scope.release(ps0.handle).catch(() => {});
+      throw new Error("无法读取候选名单球员列表（PersonList）。");
+    }
+
+    // 切换短名单后等待 PersonList 刷新到预期人数（最多约 900ms）
+    let listVal = pl.read?.value || null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const curCount = listVal?.count ?? listVal?.items?.length ?? 0;
+      if (expectedCount === null || curCount === expectedCount) break;
+      await new Promise(r => setTimeout(r, 150));
+      listVal = (await scope.ready(pl.handle, undefined, 1000)).value;
+    }
+
+    const total = listVal?.count ?? listVal?.items?.length ?? 0;
+    const take = Math.min(total, Math.max(1, Math.min(40, Number(limit) || 20)));
+    const coreAttrs = ["Pace", "Acceleration", "Stamina", "Technique", "Passing", "Dribbling", "Finishing", "Tackling", "Decisions", "Vision"];
+    const players = [];
+    let cachedPropSet = null;
+
+    for (let i = 0; i < take; i++) {
+      const pRef = { source: pl.handle, path: String(i) };
+      const pCtx = { ...ctx0, Person: pRef };
+      const [nameR, ageR, posR, natR, clubSub, valR, wageR] = await Promise.all([
+        scope.readAndRelease(pRef, "Name", pCtx, 600),
+        scope.readAndRelease(pRef, "Age", pCtx, 500),
+        scope.readAndRelease(pRef, "BestPositionShortString", pCtx, 500),
+        scope.readAndRelease(pRef, "NationalityText", pCtx, 500),
+        scope.subscribeOptional(pRef, "Club", pCtx, 500),
+        scope.readAndRelease(pRef, "Value", pCtx, 500),
+        scope.readAndRelease(pRef, "Wage", pCtx, 500)
+      ]);
+
+      const isFreeAgent = !clubSub.handle || clubSub.read?.value?.type === "SI.Bindable.NullReference";
+      let clubName = isFreeAgent ? "自由球员" : null;
+      if (!isFreeAgent && clubSub.handle) {
+        const cn = await scope.readAndRelease(clubSub.handle, "Name", pCtx, 450);
+        clubName = stripRichText(cn.scalar || "") || "有约在身";
+      }
+      if (clubSub.handle) await scope.release(clubSub.handle).catch(() => {});
+
+      const row = {
+        index: i,
+        personIdentity: listVal?.items?.[i]?.identity || null,
+        name: stripRichText(nameR.scalar || ""),
+        age: Number.parseInt(ageR.scalar, 10) || null,
+        position: stripRichText(posR.scalar || "") || null,
+        nationality: stripRichText(natR.scalar || "") || null,
+        club: clubName,
+        freeAgent: isFreeAgent,
+        value: stripRichText(valR.scalar || "") || null,
+        wage: stripRichText(wageR.scalar || "") || null
+      };
+
+      if (includeAttributes) {
+        if (!cachedPropSet) {
+          const metaProps = await scope.properties(pRef, "").catch(() => []);
+          cachedPropSet = new Set(metaProps.map(p => p.name.split(":")[0]));
+        }
+        const attrs = {};
+        const attrPairs = coreAttrs.map(base => {
+          const matched = [base, `Attribute${base}`, `PlayerAttribute${base}`].find(c => cachedPropSet.has(c));
+          return [base, matched];
+        }).filter(([, matched]) => Boolean(matched));
+
+        const attrResults = await Promise.all(
+          attrPairs.map(([, propName]) => scope.readAndRelease(pRef, propName, pCtx, 500))
+        );
+        for (let k = 0; k < attrPairs.length; k++) {
+          const v = attrResults[k]?.scalar;
+          if (v !== null && v !== undefined && String(v).trim() !== "") {
+            attrs[attrPairs[k][0]] = stripRichText(v);
+          }
+        }
+        row.attributes = attrs;
+      }
+
+      players.push(row);
+    }
+
+    await scope.release(pl.handle).catch(() => {});
+    await scope.release(ps0.handle).catch(() => {});
+    return { total, returnedCount: players.length, players };
+  }
+
+  // 支持按 shortlistName / shortlistIndex / allShortlists=true 跨名单直读任意候选名单球员与考察属性，无需玩家在游戏内手动切换
+  async function getShortlistPlayers({
+    shortlistName = "",
+    shortlistIndex,
+    allShortlists = false,
+    includeAttributes = true,
+    restoreActive = true,
+    limit = 20
+  } = {}) {
+    return client.scope(async scope => {
+      const before = await readShortlists(scope);
+      const origActive = before.items.find(x => x.isActive) || before.items[0] || null;
+      let currentActiveIndex = origActive?.index ?? null;
+      let switched = false;
+
+      let targets = [];
+      if (allShortlists) {
+        targets = before.items;
+      } else if (stripRichText(shortlistName)) {
+        const q = stripRichText(shortlistName).toLowerCase();
+        const exact = before.items.find(x => x.name.toLowerCase() === q);
+        const hit = exact || before.items.find(x => x.name.toLowerCase().includes(q));
+        if (!hit) {
+          throw new Error(`未找到名称匹配 "${shortlistName}" 的候选名单；当前已有：${before.items.map(x => `${x.index}:${x.name}(${x.countText})`).join(" / ")}`);
+        }
+        targets = [hit];
+      } else if (Number.isInteger(shortlistIndex)) {
+        const hit = before.items.find(x => x.index === shortlistIndex || x.position === shortlistIndex);
+        if (!hit) {
+          throw new Error(`未找到 index=${shortlistIndex} 的候选名单（共 ${before.count} 个）。`);
+        }
+        targets = [hit];
+      } else if (origActive) {
+        targets = [origActive];
+      }
+
+      const results = [];
+      try {
+        for (const target of targets) {
+          const expectedCount = parseShortlistCount(target.countText);
+          if (expectedCount === 0) {
+            results.push({ index: target.index, name: target.name, countText: target.countText, total: 0, returnedCount: 0, players: [] });
+            continue;
+          }
+          if (currentActiveIndex !== target.index) {
+            await setActiveShortlist(target.index, "shortlist_read_switch");
+            switched = true;
+            currentActiveIndex = target.index;
+            await new Promise(r => setTimeout(r, 250));
+          }
+          const data = await readActiveShortlistPlayers(scope, before.team.handle, { expectedCount, includeAttributes, limit });
+          results.push({ index: target.index, name: target.name, countText: target.countText, ...data });
+        }
+      } finally {
+        if (switched && restoreActive && origActive && currentActiveIndex !== origActive.index) {
+          await setActiveShortlist(origActive.index, "shortlist_read_restore").catch(() => {});
+        }
+      }
+
+      if (!allShortlists && results.length === 1) {
+        return {
+          ok: true,
+          shortlist: { index: results[0].index, name: results[0].name, countText: results[0].countText },
+          total: results[0].total,
+          returnedCount: results[0].returnedCount,
+          players: results[0].players,
+          allShortlists: before.items.map(x => ({ index: x.index, name: x.name, countText: x.countText, isActive: x.isActive }))
+        };
+      }
+      return {
+        ok: true,
+        shortlistCount: results.length,
+        shortlists: results
+      };
+    });
   }
 
   // 通过全库原生 game.Search 按姓名定位外部球员，返回持有 FM.UI.PersonReference 的句柄与基本信息
@@ -429,6 +611,7 @@ export function createShortlistManagementTools(call) {
 
   return {
     listShortlists,
+    getShortlistPlayers,
     createShortlist,
     renameShortlist,
     deleteShortlist,
