@@ -28,7 +28,7 @@ export const EXPLICIT_TOOL_METADATA = {
 
   // 容易误判读写或领域的重点工具（显式声明）
   search_players: { domain: "recruitment", readOnly: true, exclusiveState: true, riskLevel: "low", requiresOutOfMatch: false },
-  set_tactical_style: { domain: "tactics", readOnly: false, exclusiveState: true, riskLevel: "medium", requiresOutOfMatch: false },
+  set_tactical_style: { domain: "tactics", readOnly: false, exclusiveState: true, riskLevel: "medium", requiresOutOfMatch: true },
   optimize_best_xi: { domain: "squad", readOnly: true, exclusiveState: false, riskLevel: "low", requiresOutOfMatch: false },
   audit_squad_and_contracts: { domain: "squad", readOnly: true, exclusiveState: false, riskLevel: "low", requiresOutOfMatch: false },
   compare_players: { domain: "squad", readOnly: true, exclusiveState: false, riskLevel: "low", requiresOutOfMatch: false },
@@ -50,7 +50,7 @@ export const EXPLICIT_TOOL_METADATA = {
   get_shortlist_players: { domain: "recruitment", readOnly: true, exclusiveState: true, riskLevel: "low", requiresOutOfMatch: false },
   add_player_to_shortlist: { domain: "recruitment", readOnly: false, exclusiveState: true, riskLevel: "medium", requiresOutOfMatch: false },
   remove_player_from_shortlist: { domain: "recruitment", readOnly: false, exclusiveState: true, riskLevel: "medium", requiresOutOfMatch: false },
-  manage_tactic_slot: { domain: "tactics", readOnly: false, exclusiveState: true, riskLevel: "high", requiresOutOfMatch: false },
+  manage_tactic_slot: { domain: "tactics", readOnly: false, exclusiveState: true, riskLevel: "high", requiresOutOfMatch: true },
   change_recruitment_focus_lifecycle: { domain: "recruitment", readOnly: false, exclusiveState: true, riskLevel: "high", requiresOutOfMatch: true },
   manage_manager_career: { domain: "manager", readOnly: false, exclusiveState: true, riskLevel: "high", requiresOutOfMatch: true },
   manage_club_affiliate: { domain: "club", readOnly: false, exclusiveState: true, riskLevel: "high", requiresOutOfMatch: true }

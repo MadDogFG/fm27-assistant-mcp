@@ -43,7 +43,15 @@ dotnet build bepinex-plugin/FMAssistant/FMAssistant.csproj -c Release
 - MCP：`mcp_config.json`
 
 ### 3.2 其他 MCP 客户端（Cursor / Claude Desktop / Cline 等）
-在客户端的 MCP 配置文件中添加以下服务节点（注意将路径替换为你的实际绝对路径）：
+注意：部分宿主客户端不会把工作目录切换到本仓库，**必须使用绝对路径**而非相对路径 `mcp/fm-assistant-mcp.mjs`。在仓库根目录运行以下命令可直接生成包含当前实际绝对路径的 JSON 配置：
+
+```bash
+node scripts/generate-mcp-config.mjs
+# 如需直接把绝对路径写回本机 mcp_config.json，可附加 --write：
+node scripts/generate-mcp-config.mjs --write
+```
+
+生成的配置格式如下：
 ```json
 {
   "mcpServers": {
@@ -77,7 +85,7 @@ dotnet build bepinex-plugin/FMAssistant/FMAssistant.csproj -c Release
 1. 启动游戏并进入一个已加载的经理存档。
 2. 查看 `<游戏目录>\BepInEx\LogOutput.log`，应能看到：
    ```text
-   [Info   :FM Assistant] [FM Assistant] loading v1.0.0
+   [Info   :FM Assistant] [FM Assistant] loading v1.1.0
    ```
 3. 在浏览器或终端访问 `http://127.0.0.1:27190/health`，或让 Agent 调用 `plugin_health`，应返回 `ok: true`。
 

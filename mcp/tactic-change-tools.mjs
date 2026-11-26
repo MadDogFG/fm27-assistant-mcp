@@ -1,4 +1,4 @@
-import { createLiveClient } from "./live-client.mjs";
+import { createLiveClient, clean } from "./live-client.mjs";
 
 // Tactic change lifecycle: next-match-only (1933068080), cancel (846559841, CanRevert),
 // confirm (1937405795, CanConfirmChanges).
@@ -43,23 +43,61 @@ export function createTacticChangeTools(call) {
           id: args.operationId, choiceToken: args.expectedChoiceToken }, true), applied: false };
       });
     },
-    // TAC-O06: 通过 Tactic.Name 属性更新并读回校验重命名当前战术
+    // TAC-O06: 通过 Tactic.Name 属性更新并读回校验重命名当前战术，严格区分 unchanged / verified / unverified 三态
     rename: async ({ name } = {}) => {
-      const trimmed = String(name || "").trim();
+      const trimmed = clean(String(name || "")).trim();
       if (!trimmed) throw new Error("必须提供新的战术名称 name。");
       return client.scope(async scope => {
         const t = await scope.tactic();
         const tactic = t.tactic.handle;
-        const nameSub = await scope.subscribe(tactic, "Name", { ...t.contexts, Tactic: { source: tactic }, tactic: { source: tactic } });
-        const beforeName = nameSub.read?.value?.value ?? null;
+        const nameCtx = { ...t.contexts, Tactic: { source: tactic }, tactic: { source: tactic } };
+        const nameSub = await scope.subscribe(tactic, "Name", nameCtx);
+        const beforeRaw = nameSub.read?.value?.value ?? null;
+        const beforeName = beforeRaw === null ? null : clean(beforeRaw);
+        if (beforeName === trimmed) {
+          return {
+            ok: true,
+            status: "unchanged",
+            changed: false,
+            verified: false,
+            beforeName,
+            requestedName: trimmed,
+            afterName: beforeName,
+            note: "当前战术名称已是目标名称，未派发写入。"
+          };
+        }
         const upd = await call(
           `/api/v1/internal/update?handle=${encodeURIComponent(nameSub.handle)}&apply=true`,
           { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(trimmed) }
         );
         await new Promise(r => setTimeout(r, 250));
-        const afterSub = await scope.subscribe(tactic, "Name", { ...t.contexts, Tactic: { source: tactic }, tactic: { source: tactic } });
-        const afterName = afterSub.read?.value?.value ?? null;
-        return { ok: true, beforeName, afterName, verified: afterName === trimmed || afterName === JSON.stringify(trimmed), update: upd };
+        const afterSub = await scope.subscribe(tactic, "Name", nameCtx);
+        const afterRaw = afterSub.read?.value?.value ?? null;
+        const afterName = afterRaw === null ? null : clean(afterRaw);
+        const matched = afterName === trimmed || afterName === JSON.stringify(trimmed);
+        if (matched) {
+          return {
+            ok: true,
+            status: "verified",
+            changed: true,
+            verified: true,
+            beforeName,
+            requestedName: trimmed,
+            afterName,
+            update: upd
+          };
+        }
+        return {
+          ok: false,
+          status: "unverified",
+          changed: false,
+          verified: false,
+          beforeName,
+          requestedName: trimmed,
+          afterName,
+          error: `战术改名已派发，但独立读回仍为 "${afterName ?? "(空)"}"，未确认生效。`,
+          update: upd
+        };
       });
     }
   };

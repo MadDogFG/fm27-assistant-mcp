@@ -38,8 +38,34 @@ export function createShortlistManagementTools(call) {
     );
   }
 
-  // 读取单个已激活短名单内的球员列表与核心考察属性
-  async function readActiveShortlistPlayers(scope, teamHandle, { expectedCount = null, includeAttributes = true, limit = 20 } = {}) {
+  // 提取 PersonList 成员身份签名，用于区分“同人数但不同名单”防止串读
+  function listIdentitySignature(listVal) {
+    const items = listVal?.items || [];
+    if (!items.length) return `count:${listVal?.count ?? 0}`;
+    return `${listVal?.count ?? items.length}|${items.map(it => it?.identity || "").join(",")}`;
+  }
+
+  // 读取当前 HumanPersonSearch(Type=0) 的列表快照签名（仅用于切换前记录基线）
+  async function captureCurrentShortlistSignature(scope, teamHandle) {
+    const ctx0 = { human: { source: "human" }, Human: { source: "human" }, team: { source: teamHandle }, Team: { source: teamHandle }, Type: 0, type: 0 };
+    const ps0 = await scope.subscribeOptional("human", "HumanPersonSearch", ctx0, 1200);
+    if (!ps0.handle) return null;
+    const pl = await scope.subscribeOptional(ps0.handle, "PersonList", ctx0, 1000);
+    const sig = pl.handle ? listIdentitySignature(pl.read?.value) : null;
+    if (pl.handle) await scope.release(pl.handle).catch(() => {});
+    await scope.release(ps0.handle).catch(() => {});
+    return sig;
+  }
+
+  // 读取单个已激活短名单内的球员列表与核心考察属性；若发生了跨名单切换则强制校验目标名单激活且成员签名/人数已刷新
+  async function readActiveShortlistPlayers(scope, teamHandle, {
+    targetIndex = null,
+    targetName = "",
+    expectedCount = null,
+    requireRefreshFromSignature = null,
+    includeAttributes = true,
+    limit = 20
+  } = {}) {
     const ctx0 = { human: { source: "human" }, Human: { source: "human" }, team: { source: teamHandle }, Team: { source: teamHandle }, Type: 0, type: 0 };
     const ps0 = await scope.subscribeOptional("human", "HumanPersonSearch", ctx0, 1500);
     if (!ps0.handle) throw new Error("候选名单搜索通道（HumanPersonSearch Type=0）暂未就绪。");
@@ -49,13 +75,44 @@ export function createShortlistManagementTools(call) {
       throw new Error("无法读取候选名单球员列表（PersonList）。");
     }
 
-    // 切换短名单后等待 PersonList 刷新到预期人数（最多约 900ms）
     let listVal = pl.read?.value || null;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const curCount = listVal?.count ?? listVal?.items?.length ?? 0;
-      if (expectedCount === null || curCount === expectedCount) break;
-      await new Promise(r => setTimeout(r, 150));
-      listVal = (await scope.ready(pl.handle, undefined, 1000)).value;
+    const didSwitch = requireRefreshFromSignature !== null;
+    let readyConfirmed = !didSwitch;
+    if (didSwitch || expectedCount !== null) {
+      const maxAttempts = didSwitch ? 8 : 3;
+      if (didSwitch) readyConfirmed = false;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (attempt > 0) {
+          await new Promise(r => setTimeout(r, 150));
+          listVal = (await scope.ready(pl.handle, undefined, 1000)).value;
+        }
+        const curCount = listVal?.count ?? listVal?.items?.length ?? 0;
+        const curSig = listIdentitySignature(listVal);
+        const countMatches = expectedCount === null || curCount === expectedCount;
+        // 若发生了切换且之前列表非空，则成员身份签名必须变化，杜绝同人数名单串读
+        const prevNonEmpty = didSwitch && !requireRefreshFromSignature.startsWith("count:0");
+        const sigChanged = !prevNonEmpty || curSig !== requireRefreshFromSignature;
+
+        let activeMatches = true;
+        if (didSwitch && targetIndex !== null) {
+          const check = await readShortlists(scope);
+          const curActive = check.items.find(x => x.isActive);
+          activeMatches = curActive?.index === targetIndex;
+        }
+
+        if (activeMatches && countMatches && sigChanged) {
+          readyConfirmed = true;
+          break;
+        }
+      }
+    }
+
+    if (didSwitch && !readyConfirmed) {
+      await scope.release(pl.handle).catch(() => {});
+      await scope.release(ps0.handle).catch(() => {});
+      const err = new Error(`目标候选名单 "${targetName || targetIndex}" 切换未就绪（列表未确认刷新），已拒绝返回旧名单数据。`);
+      err.code = "shortlist_switch_not_ready";
+      throw err;
     }
 
     const total = listVal?.count ?? listVal?.items?.length ?? 0;
@@ -77,9 +134,19 @@ export function createShortlistManagementTools(call) {
         scope.readAndRelease(pRef, "Wage", pCtx, 500)
       ]);
 
-      const isFreeAgent = !clubSub.handle || clubSub.read?.value?.type === "SI.Bindable.NullReference";
-      let clubName = isFreeAgent ? "自由球员" : null;
-      if (!isFreeAgent && clubSub.handle) {
+      // 严格区分三态：明确 NullReference 才判自由球员；订阅未就绪返回未知，绝不误报自由球员
+      const clubResolved = Boolean(clubSub.handle && clubSub.read?.value !== null && clubSub.read?.value !== undefined);
+      const isExplicitNullClub = clubResolved && clubSub.read.value.type === "SI.Bindable.NullReference";
+      let freeAgent = null;
+      let clubStatus = "unavailable";
+      let clubName = null;
+      if (isExplicitNullClub) {
+        freeAgent = true;
+        clubStatus = "free_agent";
+        clubName = "自由球员";
+      } else if (clubResolved) {
+        freeAgent = false;
+        clubStatus = "contracted";
         const cn = await scope.readAndRelease(clubSub.handle, "Name", pCtx, 450);
         clubName = stripRichText(cn.scalar || "") || "有约在身";
       }
@@ -93,7 +160,8 @@ export function createShortlistManagementTools(call) {
         position: stripRichText(posR.scalar || "") || null,
         nationality: stripRichText(natR.scalar || "") || null,
         club: clubName,
-        freeAgent: isFreeAgent,
+        clubStatus,
+        freeAgent,
         value: stripRichText(valR.scalar || "") || null,
         wage: stripRichText(wageR.scalar || "") || null
       };
@@ -129,13 +197,13 @@ export function createShortlistManagementTools(call) {
     return { total, returnedCount: players.length, players };
   }
 
-  // 支持按 shortlistName / shortlistIndex / allShortlists=true 跨名单直读任意候选名单球员与考察属性，无需玩家在游戏内手动切换
+  // 支持按 shortlistName / shortlistIndex / allShortlists=true 跨名单直读任意候选名单球员与考察属性；
+  // 切换前校验基线签名防同人数串读，读完后自动恢复原激活名单（若玩家已主动切去第三份名单则保留玩家选择，恢复失败显式报告）
   async function getShortlistPlayers({
     shortlistName = "",
     shortlistIndex,
     allShortlists = false,
     includeAttributes = true,
-    restoreActive = true,
     limit = 20
   } = {}) {
     return client.scope(async scope => {
@@ -166,6 +234,9 @@ export function createShortlistManagementTools(call) {
       }
 
       const results = [];
+      let restoreStatus = { status: "not_needed" };
+      let finalShortlists = before.items;
+
       try {
         for (const target of targets) {
           const expectedCount = parseShortlistCount(target.countText);
@@ -173,35 +244,97 @@ export function createShortlistManagementTools(call) {
             results.push({ index: target.index, name: target.name, countText: target.countText, total: 0, returnedCount: 0, players: [] });
             continue;
           }
+          let prevSig = null;
           if (currentActiveIndex !== target.index) {
+            prevSig = await captureCurrentShortlistSignature(scope, before.team.handle);
             await setActiveShortlist(target.index, "shortlist_read_switch");
             switched = true;
             currentActiveIndex = target.index;
-            await new Promise(r => setTimeout(r, 250));
           }
-          const data = await readActiveShortlistPlayers(scope, before.team.handle, { expectedCount, includeAttributes, limit });
+          const data = await readActiveShortlistPlayers(scope, before.team.handle, {
+            targetIndex: target.index,
+            targetName: target.name,
+            expectedCount,
+            requireRefreshFromSignature: prevSig,
+            includeAttributes,
+            limit
+          });
           results.push({ index: target.index, name: target.name, countText: target.countText, ...data });
         }
       } finally {
-        if (switched && restoreActive && origActive && currentActiveIndex !== origActive.index) {
-          await setActiveShortlist(origActive.index, "shortlist_read_restore").catch(() => {});
+        if (switched && origActive) {
+          try {
+            const beforeRestore = await readShortlists(scope);
+            finalShortlists = beforeRestore.items;
+            const nowActive = beforeRestore.items.find(x => x.isActive) || null;
+            // 若玩家在读取过程中已主动切换到第三方名单，尊重并保留玩家当前选择
+            if (nowActive && nowActive.index !== currentActiveIndex && nowActive.index !== origActive.index) {
+              restoreStatus = {
+                status: "preserved_user_selection",
+                originalIndex: origActive.index,
+                currentActive: { index: nowActive.index, name: nowActive.name }
+              };
+            } else if (!nowActive || nowActive.index !== origActive.index) {
+              await setActiveShortlist(origActive.index, "shortlist_read_restore");
+              let restored = false;
+              let observedActive = null;
+              for (let attempt = 0; attempt < 5; attempt++) {
+                await new Promise(r => setTimeout(r, 120));
+                const check = await readShortlists(scope);
+                finalShortlists = check.items;
+                observedActive = check.items.find(x => x.isActive) || null;
+                if (observedActive?.index === origActive.index) {
+                  restored = true;
+                  break;
+                }
+              }
+              restoreStatus = restored
+                ? { status: "restored", activeIndex: origActive.index }
+                : {
+                    status: "restore_unverified",
+                    expectedIndex: origActive.index,
+                    currentActive: observedActive ? { index: observedActive.index, name: observedActive.name } : null,
+                    error: `未能验证候选名单已恢复回原激活名单 "${origActive.name}" (index=${origActive.index})。`
+                  };
+            } else {
+              restoreStatus = { status: "already_active", activeIndex: origActive.index };
+            }
+          } catch (restoreErr) {
+            const currentState = await readShortlists(scope).catch(() => null);
+            if (currentState?.items) finalShortlists = currentState.items;
+            const observedActive = finalShortlists.find(x => x.isActive) || null;
+            restoreStatus = {
+              status: "restore_failed",
+              expectedIndex: origActive.index,
+              currentActive: observedActive ? { index: observedActive.index, name: observedActive.name } : null,
+              error: String(restoreErr?.message || restoreErr)
+            };
+          }
         }
       }
 
+      const restoreFailed = restoreStatus.status === "restore_failed" || restoreStatus.status === "restore_unverified";
+      const allShortlistsView = finalShortlists.map(x => ({ index: x.index, name: x.name, countText: x.countText, isActive: x.isActive }));
+
       if (!allShortlists && results.length === 1) {
         return {
-          ok: true,
+          ok: !restoreFailed,
+          ...(restoreFailed ? { partialFailure: true, error: restoreStatus.error } : {}),
           shortlist: { index: results[0].index, name: results[0].name, countText: results[0].countText },
           total: results[0].total,
           returnedCount: results[0].returnedCount,
           players: results[0].players,
-          allShortlists: before.items.map(x => ({ index: x.index, name: x.name, countText: x.countText, isActive: x.isActive }))
+          activeShortlistRestore: restoreStatus,
+          allShortlists: allShortlistsView
         };
       }
       return {
-        ok: true,
+        ok: !restoreFailed,
+        ...(restoreFailed ? { partialFailure: true, error: restoreStatus.error } : {}),
         shortlistCount: results.length,
-        shortlists: results
+        shortlists: results,
+        activeShortlistRestore: restoreStatus,
+        allShortlists: allShortlistsView
       };
     });
   }

@@ -28,21 +28,54 @@ export function createManagerTools(call) {
       return { ok: true, scope: "live_club_budget",
         transferBudget: transfer.read.value, wageBudget: wageBudget.read.value };
     }),
-    getBudgetAllocation: () => budget(async ({ current, limits, editable, transfer, other }) => ({ ok: true, scope: "budget_draft",
-      index: scalar(current.read.value), editable: scalar(editable.read.value), limits: limits.read.value,
-      editedTransferDisplay: scalar(transfer.read.value), editedOtherDisplay: scalar(other.read.value),
-      note: "预算金额是游戏的显示文本；读取来源为当前经理的俱乐部预算分配引用。" })),
-    stageBudgetAllocation: args => budget(async ({ scope, adjustment, current, limits, editable }) => {
+    getBudgetAllocation: () => budget(async ({ scope, adjustment, current, limits, editable, transfer, other }) => {
+      const canEdit = String(scalar(editable.read.value)).toLowerCase() === "true";
+      let confirmationToken = null;
+      if (canEdit) {
+        const preview = await scope.api("/api/v1/commands/preview-budget-confirm", {
+          budget: adjustment.handle, current: current.handle, editable: editable.handle, transfer: transfer.handle, other: other.handle
+        }).catch(() => null);
+        confirmationToken = preview?.confirmationToken || null;
+      }
+      return {
+        ok: true,
+        scope: "budget_draft",
+        index: scalar(current.read.value),
+        editable: scalar(editable.read.value),
+        limits: limits.read.value,
+        editedTransferDisplay: scalar(transfer.read.value),
+        editedOtherDisplay: scalar(other.read.value),
+        confirmationToken,
+        note: "预算金额是游戏的显示文本；提交确认时必须传回此处或 stage_budget_allocation 返回的 confirmationToken 与稳定 operationId。"
+      };
+    }),
+    stageBudgetAllocation: args => budget(async ({ scope, adjustment, current, limits, editable, transfer, other }) => {
       if (!Number.isInteger(args.index)) throw new Error("index 必须是游戏合法分配档位的整数索引。");
-      return scope.finish(await scope.api("/api/v1/commands/stage-budget-allocation", { id: args.operationId || randomUUID(),
+      const receipt = await scope.finish(await scope.api("/api/v1/commands/stage-budget-allocation", { id: args.operationId || randomUUID(),
         budget: adjustment.handle, current: current.handle, limits: limits.handle, editable: editable.handle, index: args.index,
         expected: args.expected ?? scalar(current.read.value) }, true));
+      let confirmationToken = null;
+      if (receipt?.ok !== false) {
+        const preview = await scope.api("/api/v1/commands/preview-budget-confirm", {
+          budget: adjustment.handle, current: current.handle, editable: editable.handle, transfer: transfer.handle, other: other.handle
+        }).catch(() => null);
+        confirmationToken = preview?.confirmationToken || null;
+      }
+      return { ...receipt, confirmationToken };
     }),
     confirmBudgetAllocation: args => budget(async ({ scope, adjustment, current, editable, transfer, other }) => {
+      if (!args?.expectedConfirmationToken || typeof args.expectedConfirmationToken !== "string") {
+        throw new Error("必须提供来自 get_budget_allocation 或 stage_budget_allocation 的 expectedConfirmationToken，禁止盲目确认未审阅的预算草稿。");
+      }
+      if (!args?.operationId || typeof args.operationId !== "string") {
+        throw new Error("必须提供稳定的 operationId 以防止预算确认重发。");
+      }
       const query = { budget: adjustment.handle, current: current.handle, editable: editable.handle, transfer: transfer.handle, other: other.handle };
       const preview = await scope.api("/api/v1/commands/preview-budget-confirm", query);
-      if (args.expectedConfirmationToken && args.expectedConfirmationToken !== preview.confirmationToken) throw new Error("预算草稿已变化，请刷新。");
-      return scope.api("/api/v1/commands/confirm-budget-allocation", { ...query, id: args.operationId || randomUUID(), confirmationToken: preview.confirmationToken }, true);
+      if (args.expectedConfirmationToken !== preview.confirmationToken) {
+        throw new Error("预算草稿已变化（可能玩家或游戏调整了滑杆），已阻止提交；请重新调用 get_budget_allocation 预览后再确认。");
+      }
+      return scope.api("/api/v1/commands/confirm-budget-allocation", { ...query, id: args.operationId, confirmationToken: args.expectedConfirmationToken }, true);
     }),
     // Read only: return missing context requirements rather than filling them with guesses or opening pages.
     readArea: args => client.scope(async scope => {

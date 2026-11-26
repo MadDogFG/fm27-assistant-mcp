@@ -1,14 +1,20 @@
 #!/usr/bin/env node
 /**
  * tests/live/smoke-regression.mjs — 一键可复跑的 FM27 真机冒烟回归测试脚本。
- * 严格使用只读与完全可逆的小步写入验证：
- * 1. 本地 Bearer Token 鉴权（无 Token 必返回 401，带 Token 返回 200）；
- * 2. 生产模式防护（未授权开发诊断路由返回 403、非白名单内部事件被拦截）；
- * 3. 核心只读链路（capabilities / pre_match_briefing / squad_snapshot / league_table / set_piece_takers）；
- * 4. 确定性足球决策算法（optimize_best_xi / audit_squad_and_contracts）；
- * 5. 全局小妖搜索（search_players）与预设战术风格可逆往返切换（set_tactical_style）。
+ * 默认严格只读模式（零写入副作用，绝不修改玩家存档状态）：
+ *   1. 本地 Bearer Token 鉴权（无 Token 必返回 401，带 Token 返回 200）；
+ *   2. 生产模式防护（未授权开发诊断路由返回 403、非白名单内部事件被拦截）；
+ *   3. 核心只读链路（capabilities / pre_match_briefing / squad_snapshot / league_table / set_piece_takers / tactical_style 只读）；
+ *   4. 确定性足球决策算法（optimize_best_xi / audit_squad_and_contracts）；
+ *   5. 全局小妖搜索（search_players）与空查询防护。
  *
- * 运行方式：node tests/live/smoke-regression.mjs
+ * 有写入副作用的可逆用例（收件箱已读翻转、战术风格切换往返）仅在显式提供
+ * `--allow-writes --disposable-save`（或设置 FM_LIVE_ALLOW_WRITES=1 且 FM_LIVE_DISPOSABLE_SAVE=1）
+ * 时才启用，并且均在 try/finally 中强制尝试恢复并报告恢复结果。
+ *
+ * 运行方式：
+ *   node tests/live/smoke-regression.mjs                                   # 默认严格只读
+ *   node tests/live/smoke-regression.mjs --allow-writes --disposable-save  # 仅限可丢弃测试档
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -19,6 +25,15 @@ import { createInboxTools } from "../../mcp/inbox-tools.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BASE = (process.env.FM_ASSISTANT_URL || "http://127.0.0.1:27190").replace(/\/+$/, "");
+const argv = new Set(process.argv.slice(2));
+const ALLOW_WRITES = argv.has("--allow-writes") || process.env.FM_LIVE_ALLOW_WRITES === "1";
+const DISPOSABLE_SAVE = argv.has("--disposable-save") || process.env.FM_LIVE_DISPOSABLE_SAVE === "1";
+
+if (ALLOW_WRITES && !DISPOSABLE_SAVE) {
+  console.error("拒绝执行写入冒烟测试：开启 --allow-writes 时必须同时显式声明 --disposable-save，确认当前载入的是可丢弃测试存档。");
+  process.exit(2);
+}
+
 const auth = createAuthTokenProvider();
 
 async function rawFetch(endpoint, { method = "GET", body = null, withAuth = true } = {}) {
@@ -116,61 +131,55 @@ await runCheck("08_search_players_global_and_empty_guard", async () => {
   return { hitName: hit.players[0].name, missCount: miss.returnedCount };
 });
 
-await runCheck("09_tactical_style_guard_or_roundtrip", async () => {
+await runCheck("09_tactical_style_readonly_or_disposable_roundtrip", async () => {
   const before = await H.set_tactical_style({});
   if (!before?.ok) throw new Error("读取预设战术风格失败");
-  if (before.current?.hasActiveTactic) {
-    // 已有活跃战术槽位：执行完整预设风格切换 + 还原可逆往返
-    const origId = before.current.styleId || "0";
-    const tempId = origId === "7" ? "1" : "7";
-    const step1 = await H.set_tactical_style({ style: tempId });
-    if (!step1?.verified) throw new Error("切换临时风格未验证生效");
-    const step2 = await H.set_tactical_style({ style: origId });
-    if (!step2?.verified) throw new Error("还原原战术风格未验证生效");
-    return { mode: "active_tactic_roundtrip", origId, tempId, roundtripVerified: true };
-  }
-  // 当前存档尚未创建任何活跃战术（TacticalStyle=-1 / TacticalStyleDropdown=null）：
-  // 1) 验证 JS 防死锁守卫拒绝写入并返回明确指引
-  const guarded = await H.set_tactical_style({ style: "7" });
-  if (guarded?.ok !== false || guarded?.blockedReason !== "no_active_tactic") {
-    throw new Error(`空战术写入未被 JS 守卫拦截: ${JSON.stringify(guarded)}`);
-  }
-  // 2) 直接探测 C# 底层防死锁守卫（确保绕过 JS 时底层依然 400 拒绝且绝不卡死引擎）
-  const openTeam = await call("/api/v1/live/properties?source=human&filter=Team");
-  const teamProp = openTeam.properties.find(p => p.name.split(":")[0] === "Team");
-  const tOpen = await call(`/api/v1/live/open?source=human&property=${teamProp.id}&contexts=${encodeURIComponent("{}")}`, { method: "POST" });
-  let tacticHandle = null, ddHandle = null;
-  try {
-    await new Promise(r => setTimeout(r, 150));
-    const tacProps = await call(`/api/v1/live/properties?source=${encodeURIComponent(tOpen.handle)}&filter=Tactic`);
-    const tacProp = tacProps.properties.find(p => p.name.split(":")[0] === "Tactic");
-    const tacOpen = await call(`/api/v1/live/open?source=${encodeURIComponent(tOpen.handle)}&property=${tacProp.id}&contexts=${encodeURIComponent(JSON.stringify({ Boolean: true }))}`, { method: "POST" });
-    tacticHandle = tacOpen.handle;
-    await new Promise(r => setTimeout(r, 150));
-    const ddProps = await call(`/api/v1/live/properties?source=${encodeURIComponent(tacticHandle)}&filter=TacticalStyleDropdown`);
-    const ddProp = ddProps.properties.find(p => p.name.split(":")[0] === "TacticalStyleDropdown");
-    const ddOpen = await call(`/api/v1/live/open?source=${encodeURIComponent(tacticHandle)}&property=${ddProp.id}&contexts=${encodeURIComponent("{}")}`, { method: "POST" });
-    ddHandle = ddOpen.handle;
-    await new Promise(r => setTimeout(r, 150));
-    const directRes = await rawFetch(`/api/v1/internal/update?handle=${encodeURIComponent(ddHandle)}&apply=true`, {
-      method: "POST",
-      body: JSON.stringify(7),
-      withAuth: true
-    });
-    if (directRes.ok || directRes.status !== 400 || !String(directRes.json?.error || "").includes("no active tactic")) {
-      throw new Error(`C# 底层空战术守卫应返回 400(no active tactic)，实际 ${directRes.status}: ${directRes.json?.error}`);
+  if (!before.current?.hasActiveTactic) {
+    // 空战术（无活跃槽位）：只读安全守卫探针，不产生任何游戏写入
+    const guarded = await H.set_tactical_style({ style: "7" });
+    if (guarded?.ok !== false || guarded?.blockedReason !== "no_active_tactic") {
+      throw new Error(`空战术写入未被 JS 守卫拦截: ${JSON.stringify(guarded)}`);
     }
-    return {
-      mode: "empty_tactic_deadlock_guard",
-      jsBlockedReason: guarded.blockedReason,
-      csharpGuardStatus: directRes.status,
-      csharpGuardError: directRes.json?.error
-    };
-  } finally {
-    if (ddHandle) await rawFetch(`/api/v1/live/close?handle=${encodeURIComponent(ddHandle)}`, { method: "POST", withAuth: true }).catch(() => {});
-    if (tacticHandle) await rawFetch(`/api/v1/live/close?handle=${encodeURIComponent(tacticHandle)}`, { method: "POST", withAuth: true }).catch(() => {});
-    await rawFetch(`/api/v1/live/close?handle=${encodeURIComponent(tOpen.handle)}`, { method: "POST", withAuth: true }).catch(() => {});
+    return { mode: "empty_tactic_readonly_guard", jsBlockedReason: guarded.blockedReason };
   }
+  if (!ALLOW_WRITES) {
+    return {
+      mode: "readonly_only",
+      currentStyleId: before.current.styleId,
+      optionCount: before.options?.length || 0,
+      note: "默认只读模式不执行预设风格切换（切换预设可能重设球队指令），需写入验证请对可丢弃测试档传 --allow-writes --disposable-save。"
+    };
+  }
+  // 仅在显式 --allow-writes --disposable-save 下执行，并用 try/finally 保证尝试恢复原风格
+  const origId = before.current.styleId || "0";
+  const tempId = origId === "7" ? "1" : "7";
+  let switched = false;
+  let recovery = { attempted: false, verified: false, error: null };
+  let primaryError = null;
+  try {
+    const step1 = await H.set_tactical_style({ style: tempId });
+    switched = true;
+    if (!step1?.verified) throw new Error("切换临时风格未验证生效");
+  } catch (err) {
+    primaryError = err;
+  } finally {
+    if (switched) {
+      recovery.attempted = true;
+      try {
+        const step2 = await H.set_tactical_style({ style: origId });
+        recovery.verified = Boolean(step2?.verified);
+      } catch (recErr) {
+        recovery.error = recErr?.message || String(recErr);
+      }
+    }
+  }
+  if (primaryError) {
+    throw new Error(`${primaryError.message}（恢复状态：${JSON.stringify(recovery)}）`);
+  }
+  if (!recovery.verified) {
+    throw new Error(`还原原战术风格未验证生效（恢复状态：${JSON.stringify(recovery)}）`);
+  }
+  return { mode: "disposable_tactic_roundtrip", origId, tempId, recovery };
 });
 
 await runCheck("10_set_piece_takers_default_attacking_read", async () => {
@@ -180,46 +189,74 @@ await runCheck("10_set_piece_takers_default_attacking_read", async () => {
   return { takersCount: side.count };
 });
 
-await runCheck("11_news_read_state_reversible_roundtrip", async () => {
-  // 真实走一等 C# 领域事件通道（Event 75 / Event 138 + choiceToken + operationId + 独立读回验证）
+await runCheck("11_news_read_state_readonly_or_disposable_roundtrip", async () => {
   const readInbox = createInboxTools(call);
   const box = await readInbox({ limit: 3, unreadOnly: false });
   const item0 = box.items?.[0];
-  if (!item0?.targetIdentity) throw new Error("收件箱为空，无法测试已读状态往返");
-
+  if (!item0?.targetIdentity) throw new Error("收件箱为空，无法校验已读状态");
   const st0 = await H.get_news_read_state({ index: 0, expectedNewsIdentity: item0.targetIdentity });
   const origIsRead = Boolean(st0.isRead);
+  if (!ALLOW_WRITES) {
+    return {
+      mode: "readonly_only",
+      title: item0.title,
+      origIsRead,
+      note: "默认只读模式不翻转收件箱已读状态；需写入验证请对可丢弃测试档传 --allow-writes --disposable-save。"
+    };
+  }
+
   const flipped = !origIsRead;
-
-  await H.set_news_read_state({
-    index: 0,
-    expectedNewsIdentity: item0.targetIdentity,
-    expectedChoiceToken: flipped ? st0.choiceToken : st0.unreadChoiceToken,
-    isRead: flipped,
-    operationId: `smoke_news_flip_${Date.now()}`
-  });
-  const st1 = await H.get_news_read_state({ index: 0, expectedNewsIdentity: item0.targetIdentity });
-  if (Boolean(st1.isRead) !== flipped) {
-    throw new Error(`期望翻转后 isRead=${flipped}，独立读回为 ${st1.isRead}`);
+  let mutated = false;
+  let recovery = { attempted: false, verified: false, error: null };
+  let primaryError = null;
+  try {
+    await H.set_news_read_state({
+      index: 0,
+      expectedNewsIdentity: item0.targetIdentity,
+      expectedChoiceToken: flipped ? st0.choiceToken : st0.unreadChoiceToken,
+      isRead: flipped,
+      operationId: `smoke_news_flip_${Date.now()}`
+    });
+    mutated = true;
+    const st1 = await H.get_news_read_state({ index: 0, expectedNewsIdentity: item0.targetIdentity });
+    if (Boolean(st1.isRead) !== flipped) {
+      throw new Error(`期望翻转后 isRead=${flipped}，独立读回为 ${st1.isRead}`);
+    }
+  } catch (err) {
+    primaryError = err;
+  } finally {
+    if (mutated) {
+      recovery.attempted = true;
+      try {
+        const stCur = await H.get_news_read_state({ index: 0, expectedNewsIdentity: item0.targetIdentity });
+        if (Boolean(stCur.isRead) !== origIsRead) {
+          await H.set_news_read_state({
+            index: 0,
+            expectedNewsIdentity: item0.targetIdentity,
+            expectedChoiceToken: origIsRead ? stCur.choiceToken : stCur.unreadChoiceToken,
+            isRead: origIsRead,
+            operationId: `smoke_news_restore_${Date.now()}`
+          });
+        }
+        const stAfter = await H.get_news_read_state({ index: 0, expectedNewsIdentity: item0.targetIdentity });
+        recovery.verified = Boolean(stAfter.isRead) === origIsRead;
+      } catch (recErr) {
+        recovery.error = recErr?.message || String(recErr);
+      }
+    }
   }
-
-  await H.set_news_read_state({
-    index: 0,
-    expectedNewsIdentity: item0.targetIdentity,
-    expectedChoiceToken: origIsRead ? st1.choiceToken : st1.unreadChoiceToken,
-    isRead: origIsRead,
-    operationId: `smoke_news_restore_${Date.now()}`
-  });
-  const st2 = await H.get_news_read_state({ index: 0, expectedNewsIdentity: item0.targetIdentity });
-  if (Boolean(st2.isRead) !== origIsRead) {
-    throw new Error(`期望还原后 isRead=${origIsRead}，独立读回为 ${st2.isRead}`);
+  if (primaryError) {
+    throw new Error(`${primaryError.message}（恢复状态：${JSON.stringify(recovery)}）`);
   }
-
-  return { title: item0.title, origIsRead, flipped, verifiedRoundtrip: true };
+  if (!recovery.verified) {
+    throw new Error(`还原收件箱已读状态未验证生效（恢复状态：${JSON.stringify(recovery)}）`);
+  }
+  return { mode: "disposable_news_roundtrip", title: item0.title, origIsRead, flipped, recovery };
 });
 
 const summary = {
   generatedAt: new Date().toISOString(),
+  mode: ALLOW_WRITES ? "allow_writes_disposable_save" : "strict_readonly",
   total: checks.length,
   passed: checks.filter(c => c.passed).length,
   failed: checks.filter(c => !c.passed).length,
@@ -229,5 +266,5 @@ const summary = {
 const reportPath = path.join(ROOT, "docs", "live-verification-report.json");
 fs.mkdirSync(path.dirname(reportPath), { recursive: true });
 fs.writeFileSync(reportPath, JSON.stringify(summary, null, 2) + "\n", "utf8");
-console.log(`\nLIVE SMOKE SUMMARY: ${summary.passed}/${summary.total} passed -> ${reportPath}`);
+console.log(`\nLIVE SMOKE SUMMARY (${summary.mode}): ${summary.passed}/${summary.total} passed -> ${reportPath}`);
 if (summary.failed > 0) process.exit(1);

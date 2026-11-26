@@ -283,8 +283,12 @@ const conversationGatedTools = new Set([
   "answer_press_conference_question", "get_communication_actions", "execute_communication_action",
   "get_conversation_replies", "reply_to_conversation",
 ]);
+const retiredFileTools = new Set([
+  "list_tactic_files", "save_tactic_file",
+]);
 const excludedTools = new Set([
   ...conversationGatedTools,
+  ...retiredFileTools,
   ...(assistantMode === "autonomous" ? [] : matchAutonomousTools),
 ]);
 tools.push(...extended.tools.filter(tool => !excludedTools.has(tool.name)));
@@ -339,15 +343,26 @@ const executionQueue = createExecutionQueue();
 const toolRegistryMap = new Map(tools.map(t => [t.name, t]));
 
 async function callTool(name, args) {
+  if (developmentTools.has(name) && !developmentMode) {
+    throw new Error("此工具仅用于开发和测试。");
+  }
+  if (excludedTools.has(name)) {
+    throw new Error(
+      retiredFileTools.has(name)
+        ? `战术文件操作工具 ${name} 已从最终 MCP 移除，请使用游戏内战术槽位复制与切换工具。`
+        : "该功能不在已确认的 MCP 范围内。比赛只读，对话由玩家处理。"
+    );
+  }
+  const normalizedArgs = normalizeToolArgs(name, args);
   const toolDef = toolRegistryMap.get(name);
   if (toolDef?.inputSchema) {
-    const validation = validateToolArgs(toolDef.inputSchema, args);
+    const validation = validateToolArgs(toolDef.inputSchema, normalizedArgs);
     if (!validation.ok) {
       throw new Error(`参数校验失败（${name}）：${validation.errors.join("；")}`);
     }
   }
   const meta = resolveToolMetadata(toolDef || name);
-  return executionQueue.run(meta, async () => callToolImpl(name, args));
+  return executionQueue.run(meta, async () => callToolImpl(name, normalizedArgs, meta));
 }
 
 const COMPACTABLE_HEAVY_TOOLS = new Set(["get_tactic_analysis", "get_datahub_analysis", "get_past_match_report", "get_set_piece_takers", "list_job_adverts"]);
@@ -389,27 +404,57 @@ function compactHeavyValue(val, depth = 0) {
   return out;
 }
 
-// 统一兼容同族工具的 squadIndex <-> playerIndex 参数别名，避免传错参数名报 HTTP 400
+// 在 Schema 校验之前完成 squadIndex <-> playerIndex 别名映射并剔除多余别名；同时传入且值冲突时明确报错
 function normalizeToolArgs(name, rawArgs) {
-  if (!rawArgs || typeof rawArgs !== "object") return rawArgs || {};
-  const toolDef = tools.find(t => t.name === name);
+  if (rawArgs === undefined || rawArgs === null) return {};
+  if (typeof rawArgs !== "object" || Array.isArray(rawArgs)) return rawArgs;
+  const toolDef = toolRegistryMap.get(name);
   const props = toolDef?.inputSchema?.properties;
-  if (!props) return rawArgs;
+  if (!props) return { ...rawArgs };
   const args = { ...rawArgs };
-  if (props.playerIndex && args.playerIndex === undefined && Number.isInteger(args.squadIndex)) {
-    args.playerIndex = args.squadIndex;
+  const hasPlayer = args.playerIndex !== undefined;
+  const hasSquad = args.squadIndex !== undefined;
+  if (hasPlayer && hasSquad && args.playerIndex !== args.squadIndex) {
+    throw new Error(`参数冲突（${name}）：同时提供了 squadIndex=${args.squadIndex} 与 playerIndex=${args.playerIndex} 且值不一致，请只保留一个或确保一致。`);
   }
-  if (props.squadIndex && args.squadIndex === undefined && Number.isInteger(args.playerIndex)) {
-    args.squadIndex = args.playerIndex;
+  if (props.playerIndex && !props.squadIndex && hasSquad) {
+    if (!hasPlayer) args.playerIndex = args.squadIndex;
+    delete args.squadIndex;
+  } else if (props.squadIndex && !props.playerIndex && hasPlayer) {
+    if (!hasSquad) args.squadIndex = args.playerIndex;
+    delete args.playerIndex;
   }
   return args;
 }
 
-async function callToolImpl(name, args) {
-  args = normalizeToolArgs(name, args);
+// 判定一次具体调用是否属于“需要在非比赛期间执行的实际写入”
+function isOutOfMatchWriteCall(name, args, meta) {
+  if (!meta || meta.readOnly || !meta.requiresOutOfMatch) return false;
+  // set_tactical_style 不传 style 或 previewOnly=true 时为只读查询
+  if (name === "set_tactical_style" && (args?.style === undefined || args?.style === null || args?.style === "" || args?.previewOnly === true)) {
+    return false;
+  }
+  return true;
+}
+
+async function callToolImpl(name, args, meta) {
   if (developmentTools.has(name) && !developmentMode) throw new Error("此工具仅用于开发和测试。");
   if (excludedTools.has(name)) {
-    throw new Error("该功能不在已确认的 MCP 范围内。比赛只读，对话和谈判决定由玩家处理。");
+    throw new Error(
+      retiredFileTools.has(name)
+        ? `战术文件操作工具 ${name} 已从最终 MCP 移除，请使用游戏内战术槽位复制与切换工具。`
+        : "该功能不在已确认的 MCP 范围内。比赛只读，对话由玩家处理。"
+    );
+  }
+  // 默认 assistant 模式下，防止公用战术/阵容/定位球写工具在比赛进行中绑定到 MatchTacticReference 绕过比赛只读保护
+  if (assistantMode !== "autonomous" && isOutOfMatchWriteCall(name, args, meta)) {
+    const matchState = await call("/api/v1/match/state").catch(() => null);
+    const activeCoachingMatch = Boolean(
+      matchState?.inMatch && !matchState.pastMatch && !matchState.replay && !matchState.finished && !matchState.spectating
+    );
+    if (activeCoachingMatch) {
+      throw new Error(`默认 assistant 模式下比赛进行中禁止执行写操作（${name}）；比赛期间仅允许只读分析，如需赛中写入请显式设置 FM_ASSISTANT_MODE=autonomous。`);
+    }
   }
   if (Object.hasOwn(extended.handlers, name)) {
     const res = await extended.handlers[name](args);

@@ -33,7 +33,7 @@
    - 将本仓库中的 `dist/FMAssistant.dll` 复制到 `<FM27游戏目录>\BepInEx\plugins\FMAssistant\FMAssistant.dll`。
 3. **接入 AI 客户端**：
    - **Antigravity 等支持插件目录的客户端**：直接加载本仓库文件夹即可自动启用。
-   - **通用 MCP 客户端（Claude Desktop / Cursor / Windsurf 等）**：在 MCP 配置中添加：
+   - **通用 MCP 客户端（Claude Desktop / Cursor / Windsurf 等）**：在仓库根目录运行 `node scripts/generate-mcp-config.mjs` 可直接生成带本机绝对路径的完整配置并粘贴到客户端（避免客户端从其它目录启动时找不到相对路径），格式如下：
      ```json
      {
        "mcpServers": {
@@ -59,7 +59,7 @@
 | :--- | :---: | :--- | :--- |
 | **1. 球探、招募与转会谈判** | 67 | 全库/球探库多条件搜小妖、看球探报告与候选名单、建招募重点、草拟/修改/提交转会与租借报价、处理收到报价、续约谈判与合同前承诺、试训邀请 | `search_players`、`list_shortlists`、`open_transfer_offer_draft`、`stage_transfer_clause`、`respond_transfer_activity_offer`、`get_precontract_promises` |
 | **2. 阵容、排兵布阵与医疗注册** | 51 | 一键算全局最强首发 11 人与 7 人替补席、全队位置深度/年龄/高薪老将体检、直接选人排首发、查伤病与医疗建议、设队长、球衣号码、赛事注册、查更衣室情绪 | `optimize_best_xi`、`audit_squad_and_contracts`、`get_squad_snapshot`、`pick_lineup_player`、`submit_match_lineup`、`set_registration_player`、`get_squad_happiness_issues`、`request_medical_report` |
-| **3. 战术、针对性指令与定位球** | 38 | 一键切预设战术风格、改持球/无球阵型与心态、调团队/球员角色与指令、管 3 个战术槽位、保存/加载战术文件、设对手针对性盯防/压迫、查改定位球主罚人 | `set_tactical_style`、`get_tactic_slots`、`create_tactic`、`set_mentality`、`get_opposition_instructions`、`set_opposition_instruction`、`get_set_piece_takers`、`change_set_piece_takers` |
+| **3. 战术、针对性指令与定位球** | 36 | 一键切预设战术风格、改持球/无球阵型与心态、调团队/球员角色与指令、新建/复制/重命名/切换 3 个战术槽位、设对手针对性盯防/压迫、查改定位球主罚人 | `set_tactical_style`、`get_tactic_slots`、`create_tactic`、`set_mentality`、`get_opposition_instructions`、`set_opposition_instruction`、`get_set_piece_takers`、`change_set_piece_takers` |
 | **4. 训练、青训培养与导师小组** | 35 | 看改每周球队训练日程、复制粘贴训练模板、设赛前专项准备、给单个球员改位置/特长/强度训练、建改导师小组带小妖、按体能安排休息 | `get_training_week_edit`、`change_training_week_edit`、`copy_training_week`、`assign_individual_training_by_assistant`、`manage_mentoring_group`、`confirm_match_preparation_session` |
 | **5. 比赛数据与赛后复盘** | 25 | 读取直播或赛后详细数据（控球、射门、xG、传球、压迫统计、逐人评分）、查看比赛简报与事件流，辅助定位进攻哑火或防守漏洞 | `get_match_state`、`get_match_team_stats_and_xg`、`get_match_live_report`、`get_pre_match_briefing` |
 | **6. 主教练日常、收件箱与职员建议** | 38 | 读收件箱并批量清理已读、标记重点消息、查看并一键采纳职员会议与助教建议、跟踪经理承诺与合同目标 | `get_news_read_state`、`set_news_read_state`、`manage_inbox_message_flags`、`apply_staff_meeting_advice_all`、`get_manager_promises` |

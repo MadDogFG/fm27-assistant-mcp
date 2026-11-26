@@ -88,7 +88,11 @@ export function createPlayerSearchFilterTools(call) {
         const pAge = Number.parseInt(ageR.scalar, 10);
         const pPos = cleanText(posR.scalar || "");
         const pNat = cleanText(natR.scalar || "");
-        const isFreeAgent = !clubSub.handle || clubSub.read?.value?.type === "SI.Bindable.NullReference";
+        // 仅当 Club 订阅明确返回 SI.Bindable.NullReference 时才认定为自由球员；订阅未就绪记为未知（null）
+        const clubResolved = Boolean(clubSub.handle && clubSub.read?.value !== null && clubSub.read?.value !== undefined);
+        const isExplicitFreeAgent = clubResolved && clubSub.read.value.type === "SI.Bindable.NullReference";
+        const freeAgent = isExplicitFreeAgent ? true : (clubResolved ? false : null);
+        const clubStatus = isExplicitFreeAgent ? "free_agent" : (clubResolved ? "contracted" : "unavailable");
         const pHeight = heightR?.ok ? Number.parseInt(heightR.scalar, 10) : null;
 
         let pass = Boolean(pName);
@@ -96,12 +100,12 @@ export function createPlayerSearchFilterTools(call) {
         if (pass && Number.isFinite(Number(minAge)) && (!Number.isFinite(pAge) || pAge < Number(minAge))) pass = false;
         if (pass && Number.isFinite(Number(maxAge)) && (!Number.isFinite(pAge) || pAge > Number(maxAge))) pass = false;
         if (pass && natQ && !pNat.toLowerCase().includes(natQ)) pass = false;
-        if (pass && freeAgentOnly && !isFreeAgent) pass = false;
+        if (pass && freeAgentOnly && freeAgent !== true) pass = false;
         if (pass && Number.isFinite(Number(minHeight)) && (!Number.isFinite(pHeight) || pHeight < Number(minHeight))) pass = false;
         if (pass && Number.isFinite(Number(maxHeight)) && (!Number.isFinite(pHeight) || pHeight > Number(maxHeight))) pass = false;
 
-        let clubName = isFreeAgent ? "自由球员" : null;
-        if (pass && !isFreeAgent && clubSub.handle) {
+        let clubName = isExplicitFreeAgent ? "自由球员" : null;
+        if (pass && clubResolved && !isExplicitFreeAgent && clubSub.handle) {
           const cn = await scope.readAndRelease(clubSub.handle, "Name", pCtx, 500);
           clubName = cleanText(cn.scalar || "") || "有约在身";
         }
@@ -118,7 +122,8 @@ export function createPlayerSearchFilterTools(call) {
           position: pPos || null,
           nationality: pNat || null,
           club: clubName,
-          freeAgent: isFreeAgent,
+          clubStatus,
+          freeAgent,
           ...(Number.isFinite(pHeight) ? { heightCm: pHeight } : {})
         };
       }
