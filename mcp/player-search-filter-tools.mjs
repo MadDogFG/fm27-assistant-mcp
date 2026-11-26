@@ -151,40 +151,67 @@ export function createPlayerSearchFilterTools(call) {
             const sameQueryAsBefore = beforeSearchName.toLowerCase() === nameQ;
             let searchRestoreStatus = { status: "not_needed" };
             let wroteSearchName = false;
+            let lastWrittenQueryLower = nameQ;
 
-            try {
-              if (!sameQueryAsBefore) {
+            const executeGlobalQuery = async queryText => {
+              const qLower = queryText.toLowerCase();
+              const curBefore = cleanText(scalar((await scope.ready(sName.handle, undefined, 800)).value) ?? "");
+              const curBeforeLower = curBefore.toLowerCase();
+              const curBeforeSig = searchListSignature((await scope.ready(sList.handle, undefined, 800)).value);
+              const sameAsNow = curBeforeLower === qLower;
+              if (!sameAsNow) {
                 await call(`/api/v1/internal/update?handle=${encodeURIComponent(sName.handle)}&apply=true`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(nameRaw)
+                  body: JSON.stringify(queryText)
                 });
                 wroteSearchName = true;
+                lastWrittenQueryLower = qLower;
               }
-
-              // 严格等待游戏搜索完成并确认结果已刷新（列表签名变化或原本即相同查询词且 SearchIsFinished=True）
-              let listVal = null;
-              let searchRefreshed = sameQueryAsBefore;
-              let interruptedByPlayer = false;
-              let observedPlayerQuery = null;
-
-              for (let attempt = 0; attempt < 8; attempt++) {
-                await new Promise(r => setTimeout(r, attempt === 0 ? (sameQueryAsBefore ? 50 : 350) : 180));
+              let lv = null;
+              let refreshed = sameAsNow;
+              let interrupted = false;
+              let playerQuery = null;
+              let observedOwnWrite = sameAsNow;
+              for (let attempt = 0; attempt < 10; attempt++) {
+                await new Promise(r => setTimeout(r, attempt === 0 ? (sameAsNow ? 50 : 350) : 200));
                 const curNameVal = cleanText(scalar((await scope.ready(sName.handle, undefined, 800)).value) ?? "");
-                if (curNameVal.toLowerCase() !== nameQ) {
-                  interruptedByPlayer = true;
-                  observedPlayerQuery = curNameVal;
+                const curNameLower = curNameVal.toLowerCase();
+                if (curNameLower === qLower) {
+                  observedOwnWrite = true;
+                } else if (observedOwnWrite || curNameLower !== curBeforeLower) {
+                  // 仅当确认回显后又变动，或出现了既非旧值也非本次查询词的第三方输入时，才判定玩家中途改词
+                  interrupted = true;
+                  playerQuery = curNameVal;
                   break;
                 }
-                listVal = (await scope.ready(sList.handle, undefined, 1000)).value;
+                lv = (await scope.ready(sList.handle, undefined, 1000)).value;
                 const doneVal = sDone.handle ? String(scalar((await scope.ready(sDone.handle, undefined, 800)).value) ?? "") : "True";
-                const curSig = searchListSignature(listVal);
-                const sigChanged = curSig !== beforeListSig;
-                if (doneVal.toLowerCase() === "true" && (sameQueryAsBefore || sigChanged || (listVal?.count === 0 && attempt >= 1))) {
-                  searchRefreshed = true;
+                const curSig = searchListSignature(lv);
+                const sigChanged = curSig !== curBeforeSig;
+                // 有真实命中且签名变化立即返回；若列表为 0 项则至少等满 4 轮（~1.15s）防冷启动全库检索未返回就误判无结果
+                if (doneVal.toLowerCase() === "true" && (sameAsNow || sigChanged || (lv?.count === 0 && attempt >= 4))) {
+                  refreshed = true;
                   break;
                 }
               }
+              return { listVal: lv, searchRefreshed: refreshed, interruptedByPlayer: interrupted, observedPlayerQuery: playerQuery, activeQueryLower: qLower, observedOwnWrite };
+            };
+
+            try {
+              let run = await executeGlobalQuery(nameRaw);
+              // 中文/外文全名（如“卡里姆·阿德耶米”）0 命中时，自动用末段姓氏（如“阿德耶米”）再查一次
+              if (!run.interruptedByPlayer && run.searchRefreshed && (run.listVal?.count ?? 0) === 0 && /[·・•\s]/.test(nameRaw)) {
+                const parts = nameRaw.split(/[·・•\s]+/).filter(Boolean);
+                const surname = parts[parts.length - 1];
+                if (surname && surname.length >= 2 && surname.toLowerCase() !== nameQ) {
+                  const retry = await executeGlobalQuery(surname);
+                  if (!retry.interruptedByPlayer && retry.searchRefreshed && (retry.listVal?.count ?? 0) > 0) {
+                    run = retry;
+                  }
+                }
+              }
+              let { listVal, searchRefreshed, interruptedByPlayer, observedPlayerQuery, activeQueryLower, observedOwnWrite } = run;
 
               if (interruptedByPlayer) {
                 return {
@@ -215,7 +242,8 @@ export function createPlayerSearchFilterTools(call) {
                 // 检查玩家是否在中途修改了搜索框
                 if (i > scanStart && (i - scanStart) % 10 === 0) {
                   const midName = cleanText(scalar((await scope.ready(sName.handle, undefined, 600)).value) ?? "");
-                  if (midName.toLowerCase() !== nameQ) {
+                  const midLower = midName.toLowerCase();
+                  if (midLower !== activeQueryLower && (observedOwnWrite || midLower !== beforeSearchName.toLowerCase())) {
                     return {
                       ok: false,
                       status: "search_interrupted_by_player",
@@ -256,7 +284,8 @@ export function createPlayerSearchFilterTools(call) {
               if (wroteSearchName) {
                 try {
                   const currentNameNow = cleanText(scalar((await scope.ready(sName.handle, undefined, 600)).value) ?? "");
-                  if (currentNameNow.toLowerCase() !== nameQ) {
+                  const currentLower = currentNameNow.toLowerCase();
+                  if (currentLower !== activeQueryLower && (observedOwnWrite || currentLower !== beforeSearchName.toLowerCase())) {
                     searchRestoreStatus = { status: "preserved_player_search", currentSearchName: currentNameNow };
                   } else {
                     await call(`/api/v1/internal/update?handle=${encodeURIComponent(sName.handle)}&apply=true`, {
@@ -302,7 +331,7 @@ export function createPlayerSearchFilterTools(call) {
               if (wroteSearchName) {
                 try {
                   const cur = cleanText(scalar((await scope.ready(sName.handle, undefined, 500)).value) ?? "");
-                  if (cur.toLowerCase() === nameQ) {
+                  if (cur.toLowerCase() === lastWrittenQueryLower) {
                     await call(`/api/v1/internal/update?handle=${encodeURIComponent(sName.handle)}&apply=true`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },

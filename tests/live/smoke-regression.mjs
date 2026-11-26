@@ -124,11 +124,14 @@ await runCheck("07_algorithm_audit_squad_and_contracts", async () => {
 });
 
 await runCheck("08_search_players_global_and_empty_guard", async () => {
-  const hit = await H.search_players({ name: "Rui Araki" });
-  if (!hit?.ok || hit.returnedCount < 1) throw new Error("未搜到 Rui Araki");
+  // 动态取当前存档本队第 1 名球员的真实姓名测试搜索，避免写死某联赛球员名导致不同语言/数据库存档误报
+  const sq = await H.get_squad_snapshot({ offset: 0, limit: 1, includeContractAndStars: false, includeAvailability: false });
+  const targetName = sq?.players?.[0]?.name || "Mbappé";
+  const hit = await H.search_players({ name: targetName });
+  if (!hit?.ok || hit.returnedCount < 1) throw new Error(`未搜到目标球员 ${targetName}（status=${hit?.status}, err=${hit?.error || "none"}, total=${hit?.totalInDatabase ?? 0}）`);
   const miss = await H.search_players({ name: "NoSuchPlayerXYZ999" });
   if (!miss?.ok || miss.returnedCount !== 0) throw new Error("不存在名字不应返回残留结果");
-  return { hitName: hit.players[0].name, missCount: miss.returnedCount };
+  return { searchedName: targetName, hitName: hit.players[0].name, missCount: miss.returnedCount };
 });
 
 await runCheck("09_tactical_style_readonly_or_disposable_roundtrip", async () => {

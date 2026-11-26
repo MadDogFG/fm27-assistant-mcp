@@ -27,38 +27,76 @@ function parseFiniteNum(raw) {
   return Number.isFinite(n) ? n : null;
 }
 
-// 从原生 TacticalEffectiveness 记录提取 FM27 战术有效性 4 支柱，未知字段保留 null 绝不猜测
+// 递归剪枝 FM 原始嵌套对象/巨型数组，确保聚合包体积严格控制在 ~4-8KB 防爆上下文
+function pruneBundleValue(val, depth = 0, maxDepth = 2, maxItems = 6, maxKeys = 10) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== "object") {
+    if (typeof val === "string" && val.length > 160) return `${val.slice(0, 160)}…`;
+    return val;
+  }
+  if (Array.isArray(val)) {
+    if (depth >= maxDepth) return `[array length=${val.length}]`;
+    return val.slice(0, maxItems).map(item => pruneBundleValue(item, depth + 1, maxDepth, maxItems, maxKeys));
+  }
+  if (val.kind === "scalar") return val.value ?? null;
+  if (val.kind === "game_date") return val.display ?? val.packedValue ?? null;
+  if (val.kind === "list" && Array.isArray(val.items)) {
+    return {
+      count: val.count ?? val.items.length,
+      items: depth >= maxDepth
+        ? `[list count=${val.count ?? val.items.length}]`
+        : val.items.slice(0, maxItems).map(item => pruneBundleValue(item, depth + 1, maxDepth, maxItems, maxKeys))
+    };
+  }
+  if (depth >= maxDepth) {
+    if (val.identity) return { type: val.type || "ref", identity: val.identity };
+    return `[object keys=${Object.keys(val).length}]`;
+  }
+  const out = {};
+  let added = 0;
+  for (const [k, v] of Object.entries(val)) {
+    if (v === null || v === undefined || v === "") continue;
+    if (added >= maxKeys) break;
+    out[k] = pruneBundleValue(v, depth + 1, maxDepth, maxItems, maxKeys);
+    added++;
+  }
+  return out;
+}
+
+// 从原生 TacticalEffectiveness 记录提取 FM27 战术有效性 4 支柱，未知字段保留 null 绝不猜测，严防整棵球员明细树膨胀
 function extractTacticalEffectivenessPillars(eff) {
   if (!eff || typeof eff !== "object") {
     return { available: false, pillars: null, overall: null };
   }
   const pickByKey = (...patterns) => {
     for (const [k, v] of Object.entries(eff)) {
-      if (patterns.some(re => re.test(k))) {
-        if (v && typeof v === "object" && !Array.isArray(v)) {
-          // 若子对象含数字值或标签，提取精简视图
-          const compact = {};
-          for (const [sk, sv] of Object.entries(v).slice(0, 8)) {
-            if (sv !== null && sv !== undefined && typeof sv !== "object") compact[sk] = sv;
-          }
-          return Object.keys(compact).length ? compact : v;
+      if (!patterns.some(re => re.test(k))) continue;
+      // 跳过动辄几十 KB 的全队球员列表节点
+      if (Array.isArray(v) || v?.kind === "list") continue;
+      if (v && typeof v === "object") {
+        const compact = {};
+        for (const [sk, sv] of Object.entries(v)) {
+          if (sv === null || sv === undefined || sv === "" || typeof sv === "object") continue;
+          compact[sk] = sv;
+          if (Object.keys(compact).length >= 6) break;
         }
-        return v;
+        return Object.keys(compact).length ? compact : pruneBundleValue(v, 0, 1, 3, 6);
       }
+      return v;
     }
     return null;
   };
 
   return {
     available: true,
-    overall: pickByKey(/overall|total.*effectiveness|effectivenessScore/i),
+    overall: pickByKey(/^overall|total.*effectiveness|effectivenessScore/i),
     pillars: {
       tacticalUnderstanding_50pct: pickByKey(/understanding|familiarity/i),
-      playerBuyIn_25pct: pickByKey(/buyin|buy_in|support|morale/i),
+      playerBuyIn_25pct: pickByKey(/buyin|buy_in|support/i),
       nextMatchInfo_15pct: pickByKey(/nextmatch|opposition|preparation/i),
-      playerAbility_10pct: pickByKey(/ability|suitability|quality/i)
+      playerAbility_10pct: pickByKey(/player.*ability|ability|suitability/i)
     },
-    rawKeys: Object.keys(eff).slice(0, 20)
+    rawKeys: Object.keys(eff).slice(0, 16)
   };
 }
 
@@ -74,10 +112,10 @@ function compactScoutList(listObj, maxItems = 5) {
       const out = {};
       for (const [k, v] of Object.entries(it)) {
         if (v === null || v === undefined || v === "" || typeof v === "object") continue;
-        out[k] = v;
+        out[k] = typeof v === "string" && v.length > 100 ? `${v.slice(0, 100)}…` : v;
         if (Object.keys(out).length >= 4) break;
       }
-      return Object.keys(out).length ? out : it;
+      return Object.keys(out).length ? out : pruneBundleValue(it, 0, 1, 3, 4);
     })
   };
 }
@@ -98,8 +136,11 @@ export function createWorkflowBundleTools(call, deps) {
     const safeInboxLimit = Math.max(1, Math.min(15, Number(inboxLimit) || 8));
     const degradedSections = [];
 
+    const readContinueState = typeof deps.continuation?.state === "function"
+      ? () => deps.continuation.state({})
+      : () => deps.continuation.get({});
     const tasks = [
-      deps.continuation.get({}),
+      readContinueState(),
       readInbox({ unreadOnly: scanUnreadOnly, pendingOnly: true, limit: Math.min(safeInboxLimit, 8), includeBody: true, bodyMaxChars: 240 }),
       readInbox({ unreadOnly: scanUnreadOnly, limit: safeInboxLimit, includeBody: false }),
       deps.worldAndSquad.worldAndCompetitions({ compact: true, transferNewsLimit: 3 }),
@@ -117,10 +158,12 @@ export function createWorkflowBundleTools(call, deps) {
     const transfers = settledValue(settled[4], "transferActivity", degradedSections);
     const squadBrief = includeSquadAlerts ? settledValue(settled[5], "squadBrief", degradedSections) : null;
 
-    // 提炼近期赛程（最多 3 场）
-    const nextFixtures = Array.isArray(world?.next5Fixtures?.items)
-      ? world.next5Fixtures.items.slice(0, 3)
-      : (Array.isArray(world?.upcomingFixtures?.items) ? world.upcomingFixtures.items.slice(0, 3) : []);
+    // 提炼近期赛程（最多 3 场，兼容数组与 { items } 两种结构）
+    const nextFixtures = Array.isArray(world?.next5Fixtures)
+      ? world.next5Fixtures.slice(0, 3)
+      : (Array.isArray(world?.next5Fixtures?.items)
+        ? world.next5Fixtures.items.slice(0, 3)
+        : (Array.isArray(world?.upcomingFixtures?.items) ? world.upcomingFixtures.items.slice(0, 3) : []));
 
     // 统计活跃转会/报价条目
     const incomingList = Array.isArray(transfers?.incoming?.items) ? transfers.incoming.items : (Array.isArray(transfers?.in) ? transfers.in : []);
@@ -242,18 +285,18 @@ export function createWorkflowBundleTools(call, deps) {
 
     const effectivenessSummary = extractTacticalEffectivenessPillars(tacticAnalysis?.effectiveness);
 
-    // 提炼战术槽摘要
+    // 提炼战术槽摘要（兼容原生 label / current / primaryTraining 与 name / isCurrent 字段）
     const activeSlots = Array.isArray(tacticSlots?.slots)
       ? tacticSlots.slots.map(s => ({
         slotIndex: s.slotIndex ?? s.index,
-        name: s.name || null,
+        name: s.label || s.name || null,
         valid: s.valid ?? s.isValid ?? null,
-        isCurrent: s.isCurrent ?? s.selected ?? null,
-        isPrimaryTraining: s.isPrimaryTraining ?? s.isTraining ?? null
+        isCurrent: s.current ?? s.isCurrent ?? s.selected ?? (tacticSlots.currentSlotIndex !== undefined ? s.slotIndex === tacticSlots.currentSlotIndex : null),
+        isPrimaryTraining: s.primaryTraining ?? s.isPrimaryTraining ?? s.isTraining ?? (tacticSlots.primaryTrainingSlotIndex !== undefined ? s.slotIndex === tacticSlots.primaryTrainingSlotIndex : null)
       }))
       : [];
 
-    // 提炼对手情报摘要
+    // 提炼对手情报摘要（严格剪枝原始视觉树，防止单包膨胀）
     const oppSummary = opp ? {
       nextFixtureBinding: opp.metadata?.nextFixtureBinding || null,
       analystAssigned: opp.metadata?.analystPersonName || null,
@@ -265,7 +308,7 @@ export function createWorkflowBundleTools(call, deps) {
         strengths: compactScoutList(opp.nextOpponentAnalysis.strengths, 5),
         weaknesses: compactScoutList(opp.nextOpponentAnalysis.weaknesses, 5)
       } : null,
-      threatAssessment: opp.threatAssessment ?? null
+      threatAssessment: pruneBundleValue(opp.threatAssessment ?? null, 0, 2, 5, 8)
     } : null;
 
     // 提炼确定性备战亮点与建议
@@ -309,9 +352,12 @@ export function createWorkflowBundleTools(call, deps) {
       },
       opposition: oppSummary,
       compliance: compliance ? {
-        suspensions: compliance.suspensions ?? compliance.suspendedPlayers ?? null,
-        availability: compliance.availability ?? compliance.availablePlayersCount ?? null,
-        registrationStatus: compliance.registration ?? compliance.registrationCompliance ?? null
+        activeBansCount: compliance.bans?.activeBansCount ?? null,
+        potentialBansCount: compliance.bans?.potentialBansCount ?? null,
+        availableFirstTeamCount: compliance.availability?.availableFirstTeamCount ?? compliance.availablePlayersCount ?? null,
+        squadTotalCount: compliance.availability?.squadTotalCount ?? null,
+        nextMatchEligibilityRule: compliance.availability?.nextMatchEligibilityRule ?? null,
+        registrationStatus: pruneBundleValue(compliance.availability?.registrationCompliance ?? compliance.registrationCompliance ?? null, 0, 1, 4, 6)
       } : null,
       bestXi: bestXi ? (bestXi.ok === true ? {
         ok: true,

@@ -1,5 +1,6 @@
 {
-  "generatedAt": "2026-11-24T11:28:57.067Z",
+  "generatedAt": "2026-11-26T12:43:54.242Z",
+  "mode": "strict_readonly",
   "total": 11,
   "passed": 11,
   "failed": 0,
@@ -7,9 +8,9 @@
     {
       "name": "01_health_public_accessible",
       "passed": true,
-      "durationMs": 21,
+      "durationMs": 20,
       "detail": {
-        "version": "1.0.0",
+        "version": "1.1.0",
         "authRequired": true,
         "devMode": false
       }
@@ -25,7 +26,7 @@
     {
       "name": "03_security_authenticated_capabilities",
       "passed": true,
-      "durationMs": 2,
+      "durationMs": 371,
       "detail": {
         "schemaVersion": 2,
         "devMode": false,
@@ -35,7 +36,7 @@
     {
       "name": "04_security_production_blocks_diag_and_non_allowlist_event",
       "passed": true,
-      "durationMs": 11,
+      "durationMs": 17,
       "detail": {
         "diagStatus": 403,
         "blockedEventStatus": 400
@@ -44,69 +45,68 @@
     {
       "name": "05_readonly_briefing_and_table",
       "passed": true,
-      "durationMs": 7483,
+      "durationMs": 4266,
       "detail": {
-        "briefingBytes": 1087,
+        "briefingBytes": 1808,
         "tableOk": true
       }
     },
     {
       "name": "06_algorithm_optimize_best_xi",
       "passed": true,
-      "durationMs": 30705,
+      "durationMs": 4475,
       "detail": {
         "formation": "4-2-3-1",
-        "totalScore": 1051.63,
+        "totalScore": 1046.5,
         "benchCount": 7
       }
     },
     {
       "name": "07_algorithm_audit_squad_and_contracts",
       "passed": true,
-      "durationMs": 30533,
+      "durationMs": 132,
       "detail": {
-        "squadSize": 30,
-        "shortages": 1,
+        "squadSize": 32,
+        "shortages": 0,
         "bloated": 2
       }
     },
     {
       "name": "08_search_players_global_and_empty_guard",
       "passed": true,
-      "durationMs": 1999,
+      "durationMs": 3355,
       "detail": {
-        "hitName": "荒木鲁伊",
+        "searchedName": "卡里姆·阿德耶米",
+        "hitName": "卡里姆·阿德耶米",
         "missCount": 0
       }
     },
     {
-      "name": "09_tactical_style_guard_or_roundtrip",
+      "name": "09_tactical_style_readonly_or_disposable_roundtrip",
       "passed": true,
-      "durationMs": 1200,
+      "durationMs": 683,
       "detail": {
-        "mode": "empty_tactic_deadlock_guard",
-        "jsBlockedReason": "no_active_tactic",
-        "csharpGuardStatus": 400,
-        "csharpGuardError": "Cannot update TacticalStyleDropdown when no active tactic exists (current value is null). Create a tactic slot first."
+        "mode": "empty_tactic_readonly_guard",
+        "jsBlockedReason": "no_active_tactic"
       }
     },
     {
       "name": "10_set_piece_takers_default_attacking_read",
       "passed": true,
-      "durationMs": 817,
+      "durationMs": 883,
       "detail": {
         "takersCount": 0
       }
     },
     {
-      "name": "11_news_read_state_reversible_roundtrip",
+      "name": "11_news_read_state_readonly_or_disposable_roundtrip",
       "passed": true,
-      "durationMs": 2950,
+      "durationMs": 883,
       "detail": {
+        "mode": "readonly_only",
         "title": "之后几周的训练日程",
         "origIsRead": true,
-        "flipped": false,
-        "verifiedRoundtrip": true
+        "note": "默认只读模式不翻转收件箱已读状态；需写入验证请对可丢弃测试档传 --allow-writes --disposable-save。"
       }
     }
   ]

@@ -487,7 +487,12 @@ public static class LiveTools
         if (value == null || value.IsNull) return null;
         var type = value.DataType?.FullName ?? "unknown";
         if (type == "FM.GamePlugin.GameDate")
-            return new { kind = "game_date", type, packedValue = value.Get<GameDate>().Data1.ToString(CultureInfo.InvariantCulture), display = value.AsString() };
+        {
+            var gd = value.Get<GameDate>();
+            string isoDate = null;
+            try { isoDate = GameDate.ToDateTime(gd).ToString("yyyy-MM-dd"); } catch { /* 保留原始文本降级 */ }
+            return new { kind = "game_date", type, packedValue = gd.Data1.ToString(CultureInfo.InvariantCulture), isoDate, display = isoDate ?? value.AsString() };
+        }
         // AsString is a virtual game conversion; reading a boxed m_value as an object corrupts scalar results.
         if (type == "SI.Core.DynamicNumber" || type == "System.String" || type == "System.Boolean" || type.StartsWith("System.Int") || type.StartsWith("System.UInt") ||
             type == "System.Single" || type == "System.Double" || type == "System.Byte" || type == "System.SByte")

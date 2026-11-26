@@ -19,7 +19,11 @@
 ### 安全加固与清理
 - **职员招聘写操作加固（`mcp/job-advert-tools.mjs`）**：`offer_staff_interview`、`make_staff_contract_decision` 与 `review_or_select_applicant(select)` 强制前置核验真实候选人名单与可选 `expectedCandidateIdentity`，空候选/越界零派发；`post_job_advert` 与 `promote_or_reassign_staff` 在缺少按部门/目标岗位绑定的原生协议前安全门控零派发。
 - **属性字典缓存全仓统一**：将 `competitions-and-awards-tools.mjs`、`season-and-international-tools.mjs`、`tactic-analysis-tools.mjs` 全部切换至共享防空缓存模块 `createPropertyRegistryCache`。
-- **单测扩充**：新增 `tests/unit/workflow-bundles.test.mjs`（8 项测试，全仓累计 44/44 通过）。
+- **FM27 build `26797085`（2026-11-25 更新）与实机联调修复**：
+  - `RuntimeCapabilities.cs` 新增 Steam build `26797085` 二进制指纹白名单并重新编译发布 `dist/FMAssistant.dll`，全面恢复新版游戏下的 `fm_continue_game` 与全套写命令通道；
+  - `LiveTools.cs` 为 `FM.GamePlugin.GameDate` 增加 `GameDate.ToDateTime` 标准 ISO 日期字段 `isoDate`（`yyyy-MM-dd`），彻底打通同日全量快照缓存复用（实测二次审计 **4,031ms → 131ms，提速 30.8 倍**）与 `expiringContractsQueue` 真实到期倒计时；
+  - `search_players` 修复冷启动首次全局搜索 530ms 早退误判 0 命中问题，并新增中外文全名（如含间隔号 `·`）0 命中时的姓氏自动二次检索。
+- **单测与无头实机验收**：新增 `tests/unit/workflow-bundles.test.mjs`（8 项，全仓 44/44 通过），并在无头 FM27 build `26797085` 上完成 13/13 新功能基准验证与生产模式只读冒烟回归。
 
 ## [1.1.0] - 2026-11-24
 

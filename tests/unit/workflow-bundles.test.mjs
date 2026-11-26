@@ -10,6 +10,7 @@ import { createJobAdvertTools } from "../../mcp/job-advert-tools.mjs";
 import { createSquadSnapshotTools } from "../../mcp/squad-snapshot-tools.mjs";
 import { createExtendedTools } from "../../mcp/extended-tools.mjs";
 import { discoverTools, resolveToolMetadata } from "../../mcp/tool-catalog.mjs";
+import { scalar } from "../../mcp/live-client.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -28,10 +29,10 @@ function createStubDeps(overrides = {}) {
           { index: 1, targetIdentity: "news:2", title: "球探报告", isRead: false, important: false, canRespond: false, hasResponded: false }
         ]
     }),
-    continuation: { get: async () => ({ ok: true, canContinue: false, canRequest: false, blockingReason: "NeedAction", gameDate: "2026-09-12", gameIdentity: "g:1", mutationCursor: 5, choiceToken: "tok" }) },
+    continuation: { state: async () => ({ ok: true, canContinue: false, canRequest: false, blockingReason: "NeedAction", gameDate: "2026-09-12", gameIdentity: "g:1", mutationCursor: 5, choiceToken: "tok" }) },
     worldAndSquad: {
-      worldAndCompetitions: async () => ({ ok: true, next5Fixtures: { items: [{ inDays: "2天", opponentName: "皇马" }] } }),
-      complianceAndContracts: async () => ({ ok: true, suspensions: [], availablePlayersCount: 24, registrationCompliance: "ok" })
+      worldAndCompetitions: async () => ({ ok: true, next5Fixtures: [{ index: 0, when: "2天", opponent: "皇马" }] }),
+      complianceAndContracts: async () => ({ ok: true, bans: { activeBansCount: "0", potentialBansCount: "1" }, availability: { availableFirstTeamCount: "24", squadTotalCount: 28, registrationCompliance: "ok" } })
     },
     activity: { get: async () => ({ ok: true, incoming: { count: 2, items: [{}, {}] }, outgoing: { count: 1, items: [{}] } }) },
     playerAttrs: {
@@ -202,17 +203,32 @@ test("workflow-bundles：get_daily_hub_briefing 支持单段降级容错、头�
   assert.ok(res.actionChecklist.some(x => x.includes("推进受阻")));
 });
 
-test("workflow-bundles：get_matchday_prep_bundle 聚合 FM27 战术有效性 4 支柱、对手情报与最佳首发", async () => {
-  const bundles = createWorkflowBundleTools(async () => ({}), createStubDeps());
+test("workflow-bundles：get_matchday_prep_bundle 聚合 FM27 战术有效性 4 支柱、对手情报与最佳首发并严格控体防膨胀", async () => {
+  assert.equal(scalar({ kind: "game_date", display: "2026年8月14日", packedValue: "12345" }), "2026年8月14日");
+  // 注入模拟 80KB 巨型原始对手威胁评估树，验证剪枝器将其压至极紧凑
+  const hugeThreat = { nested: Array.from({ length: 200 }, (_, i) => ({ id: i, deep: { a: "x".repeat(300) } })) };
+  const deps = createStubDeps({
+    oppositionReport: {
+      readOppositionReport: async () => ({
+        ...(await createStubDeps().oppositionReport.readOppositionReport()),
+        threatAssessment: hugeThreat
+      })
+    },
+    tacticSlots: { get: async () => ({ ok: true, currentSlotIndex: 0, slots: [{ slotIndex: 0, label: "4-3-3 高压", valid: true, current: true, primaryTraining: true }] }) }
+  });
+  const bundles = createWorkflowBundleTools(async () => ({}), deps);
   const res = await bundles.getMatchdayPrepBundle({ formation: "4-3-3" });
 
   assert.equal(res.ok, true);
   assert.equal(res.degraded, false);
+  assert.equal(res.tactics.slots[0].name, "4-3-3 高压");
+  assert.equal(res.tactics.slots[0].isCurrent, true);
   assert.equal(res.tactics.tacticalEffectiveness4Pillars.available, true);
   assert.equal(res.tactics.tacticalEffectiveness4Pillars.pillars.tacticalUnderstanding_50pct, "42/50");
   assert.equal(res.tactics.tacticalEffectiveness4Pillars.pillars.playerBuyIn_25pct, "20/25");
   assert.equal(res.opposition.nextOpponent.name, "皇马");
   assert.equal(res.bestXi.reusedSnapshotCache, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(res), "utf8") < 12_000, "即使底层返回巨型嵌套树，赛前备战聚合包也必须压在 12KB 以内");
   assert.ok(res.prepHighlights.length >= 3);
 });
 

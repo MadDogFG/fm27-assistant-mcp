@@ -5,6 +5,10 @@ export const clean = text => String(text ?? "")
   .replace(/\u0001/g, "")
   .trim();
 export const scalar = value => {
+  if (value?.kind === "game_date") {
+    const text = value.isoDate ?? value.display ?? value.packedValue ?? null;
+    return typeof text === "string" ? clean(text) : text;
+  }
   if (value?.kind !== "scalar") return null;
   return typeof value.value === "string" ? clean(value.value) : value.value;
 };

@@ -16,7 +16,7 @@
 | 业务领域 | 核心工具 / 能力 | 验证级别 | 默认模式开放 | 已知边界与说明 |
 |---|---|---|---|---|
 | **安全与健康** | `plugin_health`、本地 256-bit Bearer Token 鉴权、生产白名单 | Live-Verified + Unit-Tested | 开放 | 区分服务在线、鉴权成功、存档就绪与待业状态；日志自动脱敏；HTTP 504 结构化透传 `timeoutReceipt` 与 `operationId` |
-| **高密度 1-Call 聚合包与批量只读** | `get_daily_hub_briefing`、`get_matchday_prep_bundle`、`get_transfer_window_briefing`、`get_match_diagnosis_bundle`、`batch_read` | Unit-Tested（待 build `26797085` 补跑实机） | 开放（只读） | 4 个高密度 1-Call 业务包并发拉取并支持单段容错降级（含 FM27 战术有效性 4 支柱提取、赛中/赛后自动分流与确定性诊断信号）；`batch_read` 仅允许 1–6 个非独占只读工具，严拒写操作、`exclusiveState` 工具与嵌套调用 |
+| **高密度 1-Call 聚合包与批量只读** | `get_daily_hub_briefing`、`get_matchday_prep_bundle`、`get_transfer_window_briefing`、`get_match_diagnosis_bundle`、`batch_read` | Live-Verified + Unit-Tested | 开放（只读） | 已在 build `26797085` 无头实机 13/13 通过：4 个 1-Call 业务包并发拉取并支持单段容错降级（含 FM27 战术有效性 4 支柱、同日快照缓存复用 30x 提速、赛中/赛后自动分流与确定性诊断信号）；`batch_read` 严拒写操作、`exclusiveState` 工具与嵌套调用 |
 | **通用数据通道** | `live_describe`、`live_query` | Live-Verified + Unit-Tested | 开放（只读） | 严格只读，支持 `scanFrom/scanLimit` 突破 64 内联与 50 行上限、自动补读隐藏筛选/排序字段；屏蔽发布会题目与对话回复节点 |
 | **战术与预设风格** | `get/set_formation`、`get_tactic_roles`、`set_player_role`、`set_mentality`、`set_tactical_style`、`set_team_instruction`、`set_player_instruction` | Live-Verified + Unit-Tested | 开放 | 预设风格仅接受原生精确 ID/完整标签，模糊多匹配返回候选零写入，支持 `expectedSlotToken` 防切槽误写 |
 | **针对性指令与对手情报** | `get_opposition_instructions`、`set_opposition_instruction`、`get_opposition_scout_report` | Live-Verified + Unit-Tested | 开放 | 自动解析对手球员姓名与球衣号；对手报告绑定 `NextFixture` 赛程、赛事、日期及报告新鲜度/知识状态 |

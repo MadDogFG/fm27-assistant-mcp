@@ -11,6 +11,10 @@ public static class RuntimeCapabilities
     private const string MatchValidationBuild = "26620374";
     private const string MatchValidationNativeHash = "d12202dd01c3911d4c4e55e778f37b2251ffb10f9cf8cecc3b9ec08ece622c6b";
     private const string MatchValidationManagedHash = "3f4a26c4869d6429d2e73c276adc64bdfaf6f3c86ce44fe0de93d14683a5d7e9";
+    // 2026-11-25 Steam build 26797085（已基于新版 interop 零警告重编译并通过实机验证）
+    private const string CurrentValidationBuild = "26797085";
+    private const string CurrentValidationNativeHash = "4781439443abfb4b8197de03f1bed5b76063c862d014cfe01c5f54d83c9875ee";
+    private const string CurrentValidationManagedHash = "8b5707a924a6c8cb493cd67bc620be25a456ae5dc6b6f313f3f1d4f70fdeb552";
     internal const string MatchFlowObservation = "observe_match_flow";
     private static readonly string[] MatchValidationRoutes = {
         "/api/v1/game/request-continue",
@@ -145,8 +149,16 @@ public static class RuntimeCapabilities
         return info.Exists && info.Length == binary.Length && info.LastWriteTimeUtc.Ticks == binary.ModifiedTicks;
     }
 
-    private static bool MatchesValidationBuild(Binary native) => Matches(native, MatchValidationNativeHash) &&
-        Matches(ObservedManaged.Value, MatchValidationManagedHash);
+    private static string MatchedValidationBuild(Binary native)
+    {
+        if (Matches(native, CurrentValidationNativeHash) && Matches(ObservedManaged.Value, CurrentValidationManagedHash))
+            return CurrentValidationBuild;
+        if (Matches(native, MatchValidationNativeHash) && Matches(ObservedManaged.Value, MatchValidationManagedHash))
+            return MatchValidationBuild;
+        return null;
+    }
+
+    private static bool MatchesValidationBuild(Binary native) => MatchedValidationBuild(native) != null;
 
     public static void RequireKnownProtocol(string scope = null)
     {
@@ -160,7 +172,8 @@ public static class RuntimeCapabilities
     {
         var binary = Observed.Value;
         var matches = Matches(binary, NativeHash);
-        var scoped = MatchesValidationBuild(binary);
+        var matchedBuild = MatchedValidationBuild(binary);
+        var scoped = matchedBuild != null;
         var features = new[] {
             new { id = "live_data", scope = "native_subscription", implemented = true },
             new { id = "tactic_role_formation", scope = "tactic_state", implemented = true },
@@ -234,7 +247,7 @@ public static class RuntimeCapabilities
             },
             protocol = new { referenceSteamBuild = ProtocolBuild, expectedNativeSha256 = NativeHash, observedNativeSha256 = binary.Sha256,
                 source = "installed_binary_on_disk", binaryOnDiskMatches = matches, error = binary.Error,
-                scopedBuild = scoped ? MatchValidationBuild : null, scopedCommandRoutes = scoped ? MatchValidationRoutes : Array.Empty<string>(),
+                scopedBuild = matchedBuild, scopedCommandRoutes = scoped ? MatchValidationRoutes : Array.Empty<string>(),
                 scopedMatchFlowObservation = scoped, observedManagedSha256 = ObservedManaged.IsValueCreated ? ObservedManaged.Value.Sha256 : null },
             mainThread = MainThreadDriver.ReadHeartbeat(),
             features,
