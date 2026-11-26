@@ -23,8 +23,15 @@ export const EXPLICIT_TOOL_METADATA = {
   fm_call: { domain: "system", readOnly: false, exclusiveState: false, riskLevel: "medium", requiresOutOfMatch: false },
   fm_continue_game: { domain: "system", readOnly: false, exclusiveState: true, riskLevel: "medium", requiresOutOfMatch: false },
   operation_status: { domain: "system", readOnly: true, exclusiveState: false, riskLevel: "low", requiresOutOfMatch: false },
+  batch_read: { domain: "system", readOnly: true, exclusiveState: false, riskLevel: "low", requiresOutOfMatch: false },
   live_describe: { domain: "system", readOnly: true, exclusiveState: false, riskLevel: "low", requiresOutOfMatch: false },
   live_query: { domain: "system", readOnly: true, exclusiveState: false, riskLevel: "low", requiresOutOfMatch: false },
+
+  // 高密度 1-Call 业务聚合工具（推荐优先使用，显著降低 Token 与思考延迟）
+  get_daily_hub_briefing: { domain: "manager", readOnly: true, exclusiveState: false, riskLevel: "low", requiresOutOfMatch: false },
+  get_matchday_prep_bundle: { domain: "tactics", readOnly: true, exclusiveState: false, riskLevel: "low", requiresOutOfMatch: false },
+  get_transfer_window_briefing: { domain: "recruitment", readOnly: true, exclusiveState: false, riskLevel: "low", requiresOutOfMatch: false },
+  get_match_diagnosis_bundle: { domain: "match", readOnly: true, exclusiveState: false, riskLevel: "low", requiresOutOfMatch: false },
 
   // 容易误判读写或领域的重点工具（显式声明）
   search_players: { domain: "recruitment", readOnly: true, exclusiveState: true, riskLevel: "low", requiresOutOfMatch: false },
@@ -126,8 +133,30 @@ const QUERY_SYNONYMS = [
   ["训练", "休息", "体能", "training", "rest", "intensity", "condition"],
   ["搜索", "筛选", "候选", "买人", "小妖", "自由球员", "search", "search_players", "filter", "shortlist", "recruitment"],
   ["战术风格", "预设风格", "高位压迫", "防反", "传控", "tactical_style", "set_tactical_style"],
-  ["招聘", "广告", "空缺", "求职", "职位", "职员", "job", "advert", "post_job_advert", "staff", "apply_for_job"]
+  ["招聘", "广告", "空缺", "求职", "职位", "职员", "job", "advert", "post_job_advert", "staff", "apply_for_job"],
+  ["日常", "过一天", "晨报", "待办", "今日", "daily", "hub", "briefing", "get_daily_hub_briefing"],
+  ["备战", "赛前", "战术有效性", "支柱", "matchday", "prep", "effectiveness", "get_matchday_prep_bundle", "get_pre_match_briefing"],
+  ["转会窗", "夏窗", "冬窗", "引援规划", "transfer_window", "get_transfer_window_briefing"],
+  ["复盘", "诊断", "赛后", "输球", "丢球", "diagnosis", "review", "get_match_diagnosis_bundle", "get_past_match_report"],
+  ["批量", "并发", "多工具", "batch", "batch_read"]
 ];
+
+const WORKFLOW_BUNDLES_GUIDE = [
+  { action: "get_daily_hub_briefing", when: "日常推进/过一天：1次查可推进状态+待回复/头条邮件+近期赛程+转会动态" },
+  { action: "get_matchday_prep_bundle", when: "赛前备战：1次查战术有效性4支柱+对手球探报告+停赛合规+全量最佳首发" },
+  { action: "get_transfer_window_briefing", when: "转会窗规划：1次查窗口倒计时+生效预算+全队缺口/冗员/合同到期队列+短名单" },
+  { action: "get_match_diagnosis_bundle", when: "赛中/赛后复盘：自动区分赛中实时统计与赛后历史战报，输出确定性诊断信号" },
+  { action: "batch_read", when: "自定义批量只读：1次并发调用 1~6 个非独占只读工具" }
+];
+
+// 在 detail=false 时压缩超长中文描述至单句摘要（<=50字），大幅降低工具发现 Token 占用
+function summarizeDescription(desc, maxChars = 50) {
+  const s = String(desc || "").trim();
+  if (s.length <= maxChars) return s;
+  const cut = s.slice(0, maxChars);
+  const sepIdx = Math.max(cut.lastIndexOf("。"), cut.lastIndexOf("；"), cut.lastIndexOf("，"));
+  return (sepIdx >= 22 ? cut.slice(0, sepIdx) : cut) + "…";
+}
 
 function expandQueryTokens(rawQuery) {
   const tokens = rawQuery.split(/[\s,，、/|]+/).map(s => s.trim()).filter(Boolean);
@@ -143,13 +172,15 @@ function expandQueryTokens(rawQuery) {
 }
 
 /**
- * 执行按领域与关键词的渐进式发现，附带显式 readOnly / riskLevel 元数据
+ * 执行按领域与关键词的渐进式发现，附带显式 readOnly / riskLevel 与必填/常用参数名（detail=false 亦可直接调用，省去二次 discover）
  */
-export function discoverTools(allTools, { domain = "all", query = "", detail = false, offset = 0, limit = 80 } = {}) {
+export function discoverTools(allTools, { domain = "all", query = "", detail = false, offset = 0, limit } = {}) {
   const normalizedDomain = String(domain || "all").toLowerCase();
   const q = String(query || "").trim().toLowerCase();
   const start = Math.max(0, Number(offset) || 0);
-  const maxItems = Math.max(1, Math.min(120, Number(limit) || 80));
+  // 泛查全领域且未指定 limit 时默认返回 25 条，配合 domains + recommendedBundles 防止一次灌入 80 条耗尽上下文
+  const defaultLimit = normalizedDomain === "all" && !q ? 25 : 60;
+  const maxItems = Math.max(1, Math.min(120, Number(limit) || defaultLimit));
 
   const tokens = q ? expandQueryTokens(q) : [];
 
@@ -177,18 +208,29 @@ export function discoverTools(allTools, { domain = "all", query = "", detail = f
 
   scored.sort((a, b) => b.score - a.score);
   const sliced = scored.slice(start, start + maxItems).map(({ tool, meta }) => {
+    const reqList = Array.isArray(tool.inputSchema?.required) ? tool.inputSchema.required : [];
+    const propNames = Object.keys(tool.inputSchema?.properties || {});
     const item = {
       name: tool.name,
       domain: meta.domain,
       readOnly: meta.readOnly,
-      riskLevel: meta.riskLevel,
-      description: tool.description
+      ...(detail || meta.riskLevel !== "low" ? { riskLevel: meta.riskLevel } : {}),
+      description: detail ? tool.description : summarizeDescription(tool.description)
     };
     if (detail) {
       item.inputSchema = tool.inputSchema;
+    } else {
+      if (reqList.length > 0) item.required = reqList;
+      if (propNames.length > 0 && (q || maxItems <= 30)) {
+        item.params = propNames.length <= 6 ? propNames : [...propNames.slice(0, 5), `+${propNames.length - 5}`];
+      }
     }
     return item;
   });
+
+  const showBundles =
+    (normalizedDomain === "all" && !q) ||
+    /日常|过一天|备战|赛前|转会窗|引援|复盘|诊断|批量|简报|bundle|briefing|batch/i.test(q);
 
   return {
     ok: true,
@@ -197,9 +239,10 @@ export function discoverTools(allTools, { domain = "all", query = "", detail = f
     returned: sliced.length,
     truncated: start + sliced.length < scored.length,
     domains: normalizedDomain === "all" && !q ? DOMAIN_META : undefined,
+    ...(showBundles ? { recommendedBundles: WORKFLOW_BUNDLES_GUIDE } : {}),
     tools: sliced,
     tip: detail
       ? "请使用 fm_call({ action: '<tool_name>', params: { ... } }) 调用所需工具。"
-      : "如需查看参数 Schema，请对指定关键词或领域传 detail: true；直接调用请使用 fm_call。"
+      : "已附带 required 与 params 名称可直接 fm_call；需参数枚举/类型详情再传 detail: true；多只读请优先用 1-Call 聚合包或 batch_read。"
   };
 }

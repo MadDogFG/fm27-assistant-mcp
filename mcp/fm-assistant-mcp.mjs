@@ -299,9 +299,34 @@ const excludedTools = new Set([
 ]);
 tools.push(...extended.tools.filter(tool => !excludedTools.has(tool.name)));
 tools.push(
-  { name: "get_inbox", description: "实时读取收件箱，不打开页面或标为已读。支持未读、重要、待办、主题筛选。筛选时使用 nextScanFrom 续查下一段，skip 仅在本段匹配结果内分页。",
+  { name: "get_inbox", description: "实时读取收件箱，不打开页面或标为已读。支持未读/重要/待办/主题筛选、includeBody:false 极速仅读标题省 Token、bodyMaxChars 摘要截断，筛选翻页使用 nextScanFrom。",
     inputSchema: { type: "object", properties: { unreadOnly: { type: "boolean", default: true }, limit: { type: "integer", minimum: 1, maximum: 20 }, skip: { type: "integer", minimum: 0 },
-      importantOnly: { type: "boolean" }, pendingOnly: { type: "boolean" }, subject: { type: "string" }, scanFrom: { type: "integer", minimum: 0 } }, additionalProperties: false } },
+      importantOnly: { type: "boolean" }, pendingOnly: { type: "boolean" }, subject: { type: "string" }, scanFrom: { type: "integer", minimum: 0 },
+      includeBody: { type: "boolean", default: true }, bodyMaxChars: { type: "integer", minimum: 0 } }, additionalProperties: false } },
+  { name: "batch_read", description: "【1-Call 批量只读】一次并发执行 1~6 个非独占只读工具，大幅减少 MCP 往返与思考延迟；严禁传入写操作、exclusiveState 工具（如 search_players / get_shortlist_players）或嵌套 batch_read。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        calls: {
+          type: "array",
+          minItems: 1,
+          maxItems: 6,
+          items: {
+            type: "object",
+            properties: {
+              action: { type: "string", description: "目标只读业务工具名" },
+              params: { type: "object", additionalProperties: true, description: "传递给目标工具的参数" },
+              alias: { type: "string", description: "可选自定义结果键名" }
+            },
+            required: ["action"],
+            additionalProperties: false
+          }
+        },
+        continueOnError: { type: "boolean", default: true }
+      },
+      required: ["calls"],
+      additionalProperties: false
+    } },
   { name: "get_tactic_roles", description: "实时读取一个首发槽位的持球或无球角色及游戏提供的合法选项，不打开战术页面。索引 0..10。",
     inputSchema: { type: "object", properties: { selectionIndex: { type: "integer", minimum: 0, maximum: 10 }, inPossession: { type: "boolean", default: true } }, required: ["selectionIndex"], additionalProperties: false } },
   { name: "set_player_role", description: "通过游戏命令修改首发槽位角色，并等待原生数据读回确认。role 使用 get_tactic_roles 的中文名或 mask 字符串，勿把 64 位 mask 转为 JS 数值。",
@@ -315,11 +340,16 @@ tools.push(
 );
 
 const INSTRUCTIONS = `FM27 Assistant 通过游戏进程内原生命令与数据通道工作。禁止模拟键鼠或直接改写存档/内存数值。
-本网关采用渐进式披露模式：
-1. 先调用 plugin_health 确认游戏与存档状态。
-2. 按需调用 fm_discover({ domain, query, detail }) 检索领域可用工具及参数 Schema。
-3. 使用 fm_call({ action, params }) 执行具体业务操作，写操作须先读状态、保留 token/expectedCurrent 与唯一 operationId，并在执行后重读状态核验。
-4. 常用日期推进可直接调用 fm_continue_game。`;
+为节省 Token 与思考轮次，请优先使用聚合入口：
+1. 先调 plugin_health 确认插件在线与存档状态。
+2. 常见高频场景优先直调 1-Call 聚合包（无需连续 4-6 次零碎查询）：
+   - 日常推进/过一天：fm_call({ action: "get_daily_hub_briefing" })
+   - 赛前备战/排阵：fm_call({ action: "get_matchday_prep_bundle" })
+   - 转会窗/引援规划：fm_call({ action: "get_transfer_window_briefing" })
+   - 赛中/赛后复盘诊断：fm_call({ action: "get_match_diagnosis_bundle" })
+   - 自定义多只读并发：fm_call({ action: "batch_read", params: { calls: [...] } })
+3. 其他场景按需调 fm_discover({ domain, query }) 检索工具（detail:false 已返回必填/常用参数名，仅需完整 Schema 时再传 detail:true）。
+4. 写操作须先读状态、保留 token/expectedCurrent 与唯一 operationId，执行后独立重读核验；日期推进可直接调 fm_continue_game。`;
 
 const liveSchema = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 const sourceFields = { source: { type: "string", description: "game、human、singleton:类型名或当前会话订阅 handle" }, path: { type: "string", description: "record 属性 ID / 列表下标路径" } };
@@ -471,6 +501,67 @@ async function callToolImpl(name, args, meta) {
   }
   switch (name) {
     case "get_inbox": return readInbox(args);
+    case "batch_read": {
+      const batchStart = Date.now();
+      const continueOnError = args.continueOnError !== false;
+      const callsList = Array.isArray(args.calls) ? args.calls : [];
+      // 派发前严格校验所有子调用：仅允许公开、非独占、只读工具，杜绝写操作或嵌套批处理混入
+      const validated = callsList.map((entry, idx) => {
+        const subAction = entry?.action;
+        if (!subAction || typeof subAction !== "string") {
+          throw new Error(`batch_read 第 ${idx} 项缺少合法字符串 action。`);
+        }
+        if (subAction === "batch_read") {
+          throw new Error("batch_read 禁止嵌套调用 batch_read。");
+        }
+        if (developmentTools.has(subAction) && !developmentMode) {
+          throw new Error(`batch_read 拒绝开发工具：${subAction}`);
+        }
+        if (excludedTools.has(subAction)) {
+          throw new Error(`batch_read 拒绝已移除或受限工具：${subAction}`);
+        }
+        const subDef = toolRegistryMap.get(subAction);
+        if (!subDef) {
+          throw new Error(`batch_read 包含未知工具：${subAction}`);
+        }
+        const subMeta = resolveToolMetadata(subDef);
+        if (!subMeta.readOnly) {
+          throw new Error(`batch_read 仅允许只读工具，已拒绝写工具：${subAction}`);
+        }
+        if (subMeta.exclusiveState) {
+          throw new Error(`batch_read 拒绝独占共享状态工具（${subAction}），请单独调用以避免 UI/搜索框并发竞争。`);
+        }
+        const normSubArgs = normalizeToolArgs(subAction, entry.params || {});
+        if (subDef.inputSchema) {
+          const check = validateToolArgs(subDef.inputSchema, normSubArgs);
+          if (!check.ok) {
+            throw new Error(`batch_read 第 ${idx} 项（${subAction}）参数校验失败：${check.errors.join("；")}`);
+          }
+        }
+        return { index: idx, alias: entry.alias || subAction, action: subAction, params: normSubArgs, meta: subMeta };
+      });
+
+      const results = await Promise.all(validated.map(async item => {
+        const itemStart = Date.now();
+        try {
+          const data = await callToolImpl(item.action, item.params, item.meta);
+          return { index: item.index, alias: item.alias, action: item.action, ok: true, elapsedMs: Date.now() - itemStart, data };
+        } catch (err) {
+          return { index: item.index, alias: item.alias, action: item.action, ok: false, elapsedMs: Date.now() - itemStart, error: err?.message || String(err) };
+        }
+      }));
+      const succeeded = results.filter(r => r.ok).length;
+      const failed = results.length - succeeded;
+      return {
+        ok: failed === 0 || continueOnError,
+        readOnly: true,
+        total: results.length,
+        succeeded,
+        failed,
+        elapsedMs: Date.now() - batchStart,
+        results
+      };
+    }
     case "get_tactic_roles": return tacticTools.getRoles(args);
     case "set_player_role": return tacticTools.setRole(args);
     case "operation_status": return tacticTools.operationStatus(args);

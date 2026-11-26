@@ -1,7 +1,7 @@
 const clean = text => String(text ?? "").replace(/[\u200b-\u200d\ufeff]/g, "").replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").trim();
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// 实时读取收件箱（Review #15）：完整支持 unreadOnly / importantOnly / pendingOnly / subject / skip / scanFrom 与 nextScanFrom 续页游标
+// 实时读取收件箱（Review #15 + Token 优化）：完整支持 unreadOnly / importantOnly / pendingOnly / subject / skip / scanFrom / includeBody / bodyMaxChars 与 nextScanFrom 续页游标
 export function createInboxTools(call) {
   return async (args = {}) => {
     const limit = args.limit ?? 10;
@@ -10,6 +10,8 @@ export function createInboxTools(call) {
     const unreadOnly = args.unreadOnly ?? true;
     const importantOnly = Boolean(args.importantOnly);
     const pendingOnly = Boolean(args.pendingOnly);
+    const includeBody = args.includeBody !== false;
+    const bodyMaxChars = Number.isInteger(args.bodyMaxChars) && args.bodyMaxChars > 0 ? args.bodyMaxChars : 0;
     const subjectFilter = typeof args.subject === "string" ? clean(args.subject).toLowerCase() : "";
     const hasFilter = importantOnly || pendingOnly || Boolean(subjectFilter);
 
@@ -115,10 +117,22 @@ export function createInboxTools(call) {
 
       const hydrateMessage = async (index, partial) => {
         const msg = { ...partial };
-        for (const [k, propName] of Object.entries(fields)) {
-          if (Object.hasOwn(msg, k)) continue;
-          msg[k] = parseFieldVal(await readFieldValue(list.handle, propName, String(index)));
-        }
+        const pendingEntries = Object.entries(fields).filter(([k]) => {
+          if (Object.hasOwn(msg, k)) return false;
+          if (k === "body" && !includeBody) return false;
+          return true;
+        });
+        // 单封邮件的多个只读字段并发拉取并即读即关，兼顾速度与句柄上限安全（并发 <= 6）
+        const values = await Promise.all(
+          pendingEntries.map(([, propName]) => readFieldValue(list.handle, propName, String(index)))
+        );
+        pendingEntries.forEach(([k], idx) => {
+          let val = parseFieldVal(values[idx]);
+          if (k === "body" && bodyMaxChars > 0 && typeof val === "string" && val.length > bodyMaxChars) {
+            val = `${val.slice(0, bodyMaxChars)}…`;
+          }
+          msg[k] = val;
+        });
         return msg;
       };
 

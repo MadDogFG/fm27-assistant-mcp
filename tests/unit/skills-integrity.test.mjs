@@ -9,7 +9,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".
 const SKILL_DIR = path.join(ROOT, "skills", "fm27-assistant");
 
 const CORE_BUILTIN_TOOLS = [
-  "plugin_health", "fm_discover", "fm_call", "fm_continue_game",
+  "plugin_health", "fm_discover", "fm_call", "fm_continue_game", "batch_read",
   "get_inbox", "get_formation_options", "set_formation", "get_tactic_roles", "set_player_role", "operation_status"
 ];
 

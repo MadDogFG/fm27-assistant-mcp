@@ -29,39 +29,42 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
 
 ---
 
-## 玩家大白话 -> 傻瓜式速查剧本
+## 玩家大白话 -> 傻瓜式速查剧本（优先 1-Call 聚合包省 Token）
 
-不知道玩家要你干嘛时，对照下面直接找工具（**用 `fm_call` 调用**）：
-- **“看看我们队现在什么情况 / 谁累了 / 谁合同快到期了 / 有哪些球员”**
-  -> 直接调 `get_squad_snapshot`！一行一个球员，20 多人一次看全；想看某人详细技术/精神/身体属性调 `get_player_attributes`。
+不知道玩家要你干嘛时，优先调 **4 大 1-Call 聚合包** 或 **`batch_read`**（均通过 `fm_call` 调用，1 轮拿到全部上下文，大幅减少思考与工具调用轮次）：
+- **“今天有什么事 / 帮我过一天 / 收件箱有啥待办”**
+  -> **首选 `get_daily_hub_briefing`**！1 次调用并发汇总推进状态/阻塞原因、待回复邮件摘要、未读头条（省去巨型正文）、近期 3 场赛程、活跃转会报价与行动清单。若 `pendingHasMore: true` 再按 `nextScanFrom` 调 `get_inbox({ unreadOnly: false, pendingOnly: true })` 翻完各页；仅对已核验的纯通知单封标读（`set_news_read_state`），**切勿只扫首页就调用 `mark_all_messages_read({})`**；推进日期调 `fm_continue_game({ action: "continue" })`。
+- **“备战下一场 / 下场打谁 / 排套最佳首发 / 战术有效性咋样”**
+  -> **首选 `get_matchday_prep_bundle`**！1 次调用并发汇总联赛名次、下场对手、FM27 **战术有效性 4 支柱**（战术理解 50% / 球员认同 25% / 下场信息 15% / 球员能力 10%）、战术槽位、对手球探优缺点、停赛合规与全量匈牙利精确最佳首发（支持 `minCondition`、`strictMinCondition: true`、`preferYouth`、`benchSize`）。如需微调再按需调 `get_opposition_instructions` 或 `set_tactical_style({ previewOnly: true })`。
+- **“转会窗规划 / 还有多少钱买人 / 谁合同快到期 / 缺什么位置”**
+  -> **首选 `get_transfer_window_briefing`**！1 次调用并发汇总转会窗倒计时、生效转会/工资预算与可调滑杆状态、全队 6 大位置线缺口/冗员、合同到期优先队列（`expiringContractsQueue`）、短名单概览与转会中心活跃来价（同日与最佳首发共享全队快照缓存）。
+- **“刚踢完这场怎么输的 / 赛中数据咋样 / 帮我复盘”**
+  -> **首选 `get_match_diagnosis_bundle`**！自动识别赛中/非赛中：赛中输出双方核心统计/xG、采样窗、本队高/低分与体能/黄牌预警及确定性战术信号（严格只读）；非赛中输出严格绑定 `fixtureIdentity` 的历史战报与数据中心近 5 场优缺点趋势。
+- **“同时查 2~6 个不相关的只读面板（如俱乐部历史+设施+财政预测）”**
+  -> **首选 `batch_read({ calls: [{ action: "...", params: {} }, ...] })`**！单轮并发拉回 1~6 个非独占只读工具（严禁塞入写工具或 `search_players` / `get_shortlist_players` 这类独占状态工具）。
+- **“看看我们队现在什么情况 / 谁累了 / 有哪些球员”**
+  -> 直接调 `get_squad_snapshot`（已升级受控并发提速，一行一人一次看全）；看单人详细技术/精神/身体属性调 `get_player_attributes`。
 - **“帮我比比这俩球员谁更好（含队外引援目标）”**
   -> 调 `compare_players({ playerIndices: [0, 1] })` 或用 `targets` 混合比较本队 `squadIndex` 与外部 `{ playerName, club }` / `{ source, path }`（含核心属性区间与持球/无球最佳角色）。
 - **“我们现在排第几 / 联赛积分榜和接下来赛程是什么”**
   -> 调 `get_league_table_and_fixtures`。
 - **“看看球队士气、更衣室大佬是谁、有没有闹情绪的”**
-  -> 调 `get_squad_dynamics_and_hierarchy` + `get_squad_happiness_issues`。
-- **“下场打谁 / 对手有什么弱点 / 怎么调整战术 / 换预设风格”**
-  -> 先调 `get_pre_match_briefing`（汇总联赛名次、下场对手、当前心态、未读消息与全队体能/锐度/士气预警）；想切换官方预设风格先调 `set_tactical_style({ previewOnly: true })` 查看精确 ID、完整标签与 `slotToken`，确认后再传精确 ID 或完整标签（切换预设可能重设球队指令）；再按需调 `get_opposition_scout_report` 与 `get_opposition_instructions`。
-- **“今天收件箱有啥事 / 帮我过一天”**
-  -> 先调 `fm_continue_game({ action: "read" })` 看阻塞原因与 `managerTask.messageIdentity`，再用 `get_inbox({ unreadOnly: false, pendingOnly: true })` 结合 `nextScanFrom` 翻完各页核查待办；仅对已检查确认的纯通知单封标读（`set_news_read_state`），**切勿只扫首页就调用 `mark_all_messages_read({})`**（整箱标读仅在玩家明确要求或已核对完全部页无待办时使用）。推进时间调 `fm_continue_game({ action: "continue" })`（若遇 `processing_card_timer_active` 等待 2 秒再读即可）。
-- **“俱乐部老板对我们有啥要求 / 还有多少钱买人”**
-  -> 调 `get_club_history_and_overview` + `get_club_vision_draft` + `get_club_budget_balances`（查已生效余额）+ `get_club_finances_projection`（查债务与预测）；需要滑动调整转会/工资比例草稿时再调 `get_budget_allocation`（别把滑杆草稿或总工资预算当成剩余工资空间）。
-- **“刚踢完这场比赛踢得怎么样 / 赛中数据咋样”**
-  -> 比赛中调 `get_match_live_report` / `get_match_team_stats_and_xg`（注意核对 `samplingWindow` 与 `sideAvailability`）；踢完了看 `get_past_match_report`（核对 `fixtureIdentity` 与 `fixtureMetadata`）。
+  -> 调 `batch_read` 并发拉取 `get_squad_dynamics_and_hierarchy` + `get_squad_happiness_issues`。
 - **“帮我安排下周训练 / 哪些人该休息”**
   -> 调 `get_team_training_schedules` 看训练表，`set_team_training_intensity` 调强度/自动休息；结合 `get_squad_snapshot` 看体能。
-- **“帮我排最佳首发、体检阵容深度和合同到期风险、选队长、分球衣号码”**
-  -> 排最佳 11 人首发与替补席调 `optimize_best_xi`（精确匈牙利匹配，自动分页读全队并同日复用体检快照；密集赛程严格轮休请传 `strictMinCondition: true`）；查位置缺口/冗员/合同到期优先队列（`expiringContractsQueue`）与高薪老将调 `audit_squad_and_contracts`（注：算法计算极快，首次全队实时订阅读取通常需 20–30 秒，同日连续调体检+排阵会自动复用快照）；落地换首发调 `get_lineup_options({ selectionIndex })` + `pick_lineup_player`，选队长调 `get_captain_options` / `set_captain`，分号码调 `get_squad_number_options` / `set_player_squad_number` / `change_squad_numbers`。
+- **“落地换首发 / 选队长 / 分球衣号码”**
+  -> 换首发调 `get_lineup_options({ selectionIndex })` + `pick_lineup_player`，选队长调 `get_captain_options` / `set_captain`，分号码调 `get_squad_number_options` / `set_player_squad_number` / `change_squad_numbers`。
 - **“我想买人/租借/续约/按条件搜自由球员或免签目标”**
-  -> 按多条件（位置/年龄/国籍/俱乐部/仅自由球员/身高）搜数据库球员直接调 `search_players`；看球探与候选调 `get_scouting_knowledge_and_reports`、`list_shortlists`；谈判与报价流程先翻 [recruitment.md](references/recruitment.md)（条款确认后可直接用 `get_negotiation_actions` + `execute_negotiation_action` 提交）。
-- **“业务工具没覆盖的冷门字段（如租借工资分担、合同条款细节、某面板原生属性）”**
-  -> 先用 `live_describe` 自省节点有哪些属性名（别盲猜），再用 `live_query` 结构化读取（严格只读、自动管理订阅与引用解析）。
+  -> 多条件全库搜人调 `search_players`；批量管理候选名单调 `list_shortlists` / `get_shortlist_players` / `add_player_to_shortlist`；谈判与报价流程先翻 [recruitment.md](references/recruitment.md)。
+- **“业务工具没覆盖的冷门字段（如租借工资分担、某面板原生属性）”**
+  -> 先用 `live_describe` 自省节点属性名，再用 `live_query` 结构化读取。
 
 ---
 
 ## FM27 必备足球与游戏常识（避免犯低级错误）
 
 - **持球阵型 vs 无球阵型（FM27 核心玩法）**：FM27 把战术拆成两套——**有球时怎么站（In Possession）** 和 **丢球防守时怎么站（Out of Possession）**。改战术或看角色时，记得区分清楚。
+- **战术有效性 4 支柱（FM27 核心胜负手）**：FM27 的战术有效性由四部分构成——**战术理解度（50%，长期不练战术课会随衰减计时器下滑）**、**球员认同度（25%，受士气与更衣室支持影响）**、**下场比赛信息（15%，依赖对手球探分析与赛前备战课）**、**球员能力匹配度（10%）**。赛前务必通过 `get_matchday_prep_bundle` 或 `get_tactic_analysis` 核查，切忌赛前一天大改阵型把熟悉度清零。
 - **体能（Condition）vs 比赛锐度（Sharpness）**：
   - *体能低* = 球员累了，容易受伤，该轮休或降训练强度；
   - *锐度低* = 球员好久没踢比赛没手感，该让他踢预备队/U20 找状态或安排友谊赛。

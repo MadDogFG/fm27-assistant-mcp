@@ -97,6 +97,7 @@ import { createMedicalTools } from "./medical-tools.mjs";
 import { createTrainingManagementTools } from "./training-management-tools.mjs";
 import { createPlayerAvailabilityTools } from "./player-availability-tools.mjs";
 import { createPlayerTrainingMenuTools } from "./player-training-menu-tools.mjs";
+import { createWorkflowBundleTools } from "./workflow-bundles-tools.mjs";
 
 const text = { type: "string" };
 const operation = { operationId: text, expected: text };
@@ -266,6 +267,11 @@ export function createExtendedTools(call) {
   const opposition = createOppositionTools(call);
   const oppositionArgs = { mode: { type: "string", enum: ["players", "positions"], default: "players" }, rowPath: text, kind: { type: "string", enum: ["marking", "pressing", "tackling", "show-foot", "personalised"] }, optionPath: text, expectedChoiceToken: text, operationId: text };
   const tacticSlots = createTacticSlotTools(call);
+  const workflowBundles = createWorkflowBundleTools(call, {
+    continuation, worldAndSquad, activity, playerAttrs, tacticSlots, tacticAnalysis,
+    oppositionReport, bestXi, seasonIntl, manager, squadAudit, shortlists,
+    playerScouting, match, matchAnalytics, pastMatchReport, datahubTr
+  });
   const slotArgs = { scope: {type:"string",enum:["team","current"],default:"team"}, action:{type:"string",enum:["select","training"]}, slotIndex:{type:"integer",minimum:0}, expectedChoiceToken:text,operationId:text };
   const tacticMenuArgs = { menuKind:{type:"string",enum:["add","modify"],default:"modify"}, optionPath:text, expectedChoiceToken:text, operationId:text, acceptDelete:{type:"boolean",default:false} };
   const tacticCreationArgs = { tacticalStyle: { type: "integer", minimum: 0 }, inPossessionFormation: { type: "integer", minimum: 1 },
@@ -584,8 +590,8 @@ export function createExtendedTools(call) {
     ["remove_job_advert", "按索引静默撤销本俱乐部已发布的职员招聘广告并独立读回校验数量减少（CLB-O13b）。", { index: { type: "integer", minimum: 0 }, operationId: text }, ["index"], jobAdverts.removeJobAdvert],
     ["apply_for_job", "按工作中心市场广告索引提交职位申请（EventFmxApplyForJob，MGR-O14a）。", { index: { type: "integer", minimum: 0 }, operationId: text }, ["index"], jobAdverts.applyForJob],
     ["declare_interest_in_job", "按工作中心市场广告索引对空缺职位表达执教兴趣（EventFmxDeclareInterestInJob，MGR-O14b）。", { index: { type: "integer", minimum: 0 }, operationId: text }, ["index"], jobAdverts.declareInterestInJob],
-    ["offer_staff_interview", "邀请职员空缺应聘者参加面试（EventFmxOfferJobInterview，CLB-O14b）。", { candidateIndex: { type: "integer", minimum: 0, default: 0 }, operationId: text }, [], jobAdverts.offerStaffInterview],
-    ["make_staff_contract_decision", "执行职员合同与任用决策（EventFmxMakeContractDecision，CLB-O15）。", { decisionIndex: { type: "integer", minimum: 0, default: 0 }, operationId: text }, [], jobAdverts.makeStaffContractDecision],
+    ["offer_staff_interview", "邀请职员空缺应聘者参加面试（须先校验真实候选人名单与可选 expectedCandidateIdentity，无候选或越界零派发，CLB-O14b）。", { candidateIndex: { type: "integer", minimum: 0 }, expectedCandidateIdentity: text, operationId: text }, ["candidateIndex"], jobAdverts.offerStaffInterview],
+    ["make_staff_contract_decision", "执行职员合同与任用决策（须先校验真实候选人名单与可选 expectedCandidateIdentity，无候选或越界零派发，CLB-O15）。", { decisionIndex: { type: "integer", minimum: 0 }, expectedCandidateIdentity: text, operationId: text }, ["decisionIndex"], jobAdverts.makeStaffContractDecision],
     ["get_past_match_report", "只读读取历史比赛赛果列表、指定场次（严格绑定 FM.UI.FixtureReference）比赛报告详情、集锦列表与球员战术评分（默认 compact=true，全量传 compact: false；MAT-R17）。", { fixtureIndex: { type: "integer", minimum: 0, default: 0 }, compact: { type: "boolean", default: true } }, [], pastMatchReport.getPastMatchReport],
     ["get_player_attributes", "只读聚合读取本队指定球员的技术/精神/身体/门将属性（自动分批防超时，兼容 squadIndex 与 playerIndex）。", { squadIndex: squadIdx, playerIndex: { type: "integer", minimum: 0, description: "与 squadIndex 等价的球员序号" }, categories: { type: "array", items: { type: "string", enum: ["technical", "mental", "physical", "goalkeeping"] }, default: ["technical", "mental", "physical"] }, customAttributes: { type: "array", items: text } }, [], playerAttrs.getPlayerAttributes],
     ["get_league_table_and_fixtures", "只读聚合当前联赛积分榜/排名与赛程（未来赛程及近期赛果）。", { limit: { type: "integer", minimum: 1, maximum: 30, default: 20 } }, [], playerAttrs.getLeagueTableAndFixtures],
@@ -636,9 +642,9 @@ export function createExtendedTools(call) {
     ["manage_mls_and_draft", "默认只读探测 MLS 工资帽/选秀规则上下文；仅在 MLS/选秀存档中放行对应操作，普通联赛与缺参零派发（REC-O28c/d）。", { action: { type: "string", enum: ["read", "set_budget_adjustment", "cancel_budget_adjustment", "complete_draft", "redraft_timeout", "restart_shuffle_draft"], default: "read" }, value: { type: "integer" }, operationId: text }, [], mlsAdvice.manageMlsAndDraft],
     ["manage_training_unit_membership", "训练分组调组入口（FM27 已调整旧版 Units 系统，当前构建未开放无依据手动调组写派发；只读请使用 get_training_unit_summaries）。", { squadIndex: { type: "integer", minimum: 0 }, unit: { type: "string", enum: ["attacking", "defensive", "midfield", "goalkeeping"] }, action: { type: "string", enum: ["add", "remove"] }, operationId: text }, ["squadIndex", "unit", "action"], trainingUnits.manageMembership],
     ["offer_youth_contract_or_trial", "校验青训候选人范围与身份（区分通道未就绪与确无候选）；青训合同/试训草稿请经由候选人 PersonReference 与 open_contract_draft 准备（SQU-O16b/d）。", { playerIndex: { type: "integer", minimum: 0 }, expectedCandidateIdentity: text, action: { type: "string", enum: ["youth_contract", "pro_contract", "trial"], default: "youth_contract" }, operationId: text }, ["playerIndex"], youthMedical.offerYouthContractOrTrial],
-    ["post_job_advert", "发布俱乐部职员空缺招聘广告（CLB-O13a）。", { roleId: { type: "integer", minimum: 0, default: 0 }, department: { type: "string", enum: ["coaching", "medical", "scouting"], default: "coaching" }, operationId: text }, [], jobAdverts.postJobAdvert],
-    ["review_or_select_applicant", "审阅职员应聘者名单或选定拟聘职员（CLB-O14a/c）。", { action: { type: "string", enum: ["review", "select"], default: "review" }, candidateIndex: { type: "integer", minimum: 0, default: 0 }, operationId: text }, [], jobAdverts.reviewOrSelectApplicant],
-    ["promote_or_reassign_staff", "执行职员晋升或调岗（CLB-O15c/d）。", { action: { type: "string", enum: ["promote", "reassign"], default: "promote" }, staffIndex: { type: "integer", minimum: 0, default: 0 }, targetRoleId: { type: "integer", minimum: 0, default: 0 }, operationId: text }, [], jobAdverts.promoteOrReassignStaff],
+    ["post_job_advert", "发布俱乐部职员空缺招聘广告（先核对对应部门空缺列表；未绑定原生角色载荷时安全门控零派发，CLB-O13a）。", { roleId: { type: "integer", minimum: 0 }, department: { type: "string", enum: ["coaching", "medical", "scouting"] }, operationId: text }, ["department", "roleId"], jobAdverts.postJobAdvert],
+    ["review_or_select_applicant", "审阅职员应聘者名单（review）或选定已核验应聘者（select 须显式传 candidateIndex 并核对候选人列表与可选 expectedCandidateIdentity，CLB-O14a/c）。", { action: { type: "string", enum: ["review", "select"], default: "review" }, candidateIndex: { type: "integer", minimum: 0 }, expectedCandidateIdentity: text, operationId: text }, [], jobAdverts.reviewOrSelectApplicant],
+    ["promote_or_reassign_staff", "职员晋升或调岗入口（当前构建未恢复区分 promote/reassign 与 targetRoleId 的独立原生协议，安全门控零派发，CLB-O15c/d）。", { action: { type: "string", enum: ["promote", "reassign"] }, staffIndex: { type: "integer", minimum: 0 }, targetRoleId: { type: "integer", minimum: 0 }, operationId: text }, ["action", "staffIndex"], jobAdverts.promoteOrReassignStaff],
     ["get_manager_career_status", "只读读取经理本人当前职务、求职次数与合同引用（MGR-O14 / MGR-O15）。", {}, [], managerCareer.getManagerCareerStatus],
     ["manage_manager_career", "处理经理面试/接受职位、本人合同/续约或带安全锁辞职（MGR-O14c/d / MGR-O15a/b/c）。", { action: { type: "string", enum: ["contract_read", "attend_interview", "accept_job", "negotiate_contract", "renew_contract", "resign"], default: "contract_read" }, jobIndex: { type: "integer", minimum: 0, default: 0 }, acceptResignConfirmation: { type: "boolean", default: false }, operationId: text }, [], managerCareer.manageManagerCareer],
     ["manage_news_follow", "关注/取消关注指定球队、赛事或新闻来源（当前构建未恢复区分关注方向与目标类型的原生协议，安全门控零派发，MGR-O23a/c）。", { targetType: { type: "string", enum: ["club", "competition", "media_source"] }, targetIndex: { type: "integer", minimum: 0 }, follow: { type: "boolean" }, operationId: text }, ["targetType", "targetIndex", "follow"], managerCareer.manageNewsFollow],
@@ -658,7 +664,32 @@ export function createExtendedTools(call) {
       lowConditionThreshold: { type: "integer", minimum: 50, maximum: 95, default: 80 },
       lowSharpnessThreshold: { type: "integer", minimum: 40, maximum: 90, default: 65 },
       expiringWithinDays: { type: "integer", minimum: 30, maximum: 1095, default: 365 }
-    }, [], squadAudit.auditSquadAndContracts]
+    }, [], squadAudit.auditSquadAndContracts],
+    ["get_daily_hub_briefing", "【1-Call 日常推进晨报】单次并发汇总可推进状态/阻塞原因、待回复邮件、未读头条（省正文省 Token）、近期 3 场赛程与转会动态，并输出确定性行动清单。", {
+      inboxLimit: { type: "integer", minimum: 1, maximum: 15, default: 8 },
+      scanUnreadOnly: { type: "boolean", default: true },
+      includeSquadAlerts: { type: "boolean", default: false }
+    }, [], workflowBundles.getDailyHubBriefing],
+    ["get_matchday_prep_bundle", "【1-Call 赛前备战情报包】单次并发汇总联赛/下场对手、FM27 战术有效性 4 支柱（理解度/认同度/下场信息/能力）、战术槽、对手球探优缺点、停赛合规与全量匈牙利最佳首发。", {
+      formation: { type: "string", enum: ["4-2-3-1", "4-3-3", "4-4-2", "3-5-2", "3-4-2-1", "4-1-4-1", "5-3-2", "4-4-2-diamond"] },
+      slots: { type: "array", items: text, minItems: 11, maxItems: 11 },
+      minCondition: { type: "integer", minimum: 40, maximum: 100, default: 75 },
+      strictMinCondition: { type: "boolean", default: false },
+      preferYouth: { type: "boolean", default: false },
+      benchSize: { type: "integer", minimum: 0, maximum: 15 },
+      excludeIndices: { type: "array", items: { type: "integer", minimum: 0 }, uniqueItems: true },
+      includeBestXi: { type: "boolean", default: true },
+      includeOpposition: { type: "boolean", default: true }
+    }, [], workflowBundles.getMatchdayPrepBundle],
+    ["get_transfer_window_briefing", "【1-Call 转会窗引援简报】单次并发汇总转会窗截止日倒计时、生效转会/工资预算、全队缺口/冗员与合同到期队列（复用快照缓存）、短名单概览、转会活动与球探摘要。", {
+      expiringWithinDays: { type: "integer", minimum: 30, maximum: 1095, default: 365 },
+      includeShortlists: { type: "boolean", default: true },
+      includeTransferActivity: { type: "boolean", default: true }
+    }, [], workflowBundles.getTransferWindowBriefing],
+    ["get_match_diagnosis_bundle", "【1-Call 赛中/赛后战术诊断包】自动识别赛中或非赛中状态：赛中输出双方核心统计/xG、采样窗、本队高/低分与体能/黄牌预警及确定性战术信号；非赛中输出指定历史战报与近 5 场数据中心趋势。", {
+      fixtureIndex: { type: "integer", minimum: 0, default: 0 },
+      topPlayersLimit: { type: "integer", minimum: 1, maximum: 11, default: 5 }
+    }, [], workflowBundles.getMatchDiagnosisBundle]
   ];
   return { tools: definitions.map(([name, description, properties, required]) => ({ name,
     description: experimental + description, inputSchema: schema(properties, required) })),

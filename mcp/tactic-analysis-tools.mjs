@@ -1,25 +1,16 @@
 import { createLiveClient } from "./live-client.mjs";
+import { createPropertyRegistryCache } from "./core/property-registry.mjs";
 
-// Tactic analysis reads: the tactic's native "TacticalEffectiveness" record (understanding, player
-// ability, player buy-in, next-match information, overall effectiveness, status flags, player list)
-// and "TacticComplexity" record (overall / team / player / opposition instruction complexity).
-// Both are exposed with hashed field ids; the plugin's property registry maps id -> name.
+// 战术有效性评估（TacticalEffectiveness 4 支柱）与战术复杂度（TacticComplexity）只读工具，复用共享属性表缓存避免空表缓存或重复拉取
 export function createTacticAnalysisTools(call) {
   const client = createLiveClient(call);
-  async function propertyNames() {
-    try {
-      const registry = await call("/api/v1/internal/registry?kind=properties");
-      const names = new Map();
-      for (const item of registry.items || []) names.set(String(item.id), item.name);
-      return names;
-    } catch { return new Map(); }
-  }
+  const { getPropertyMap } = createPropertyRegistryCache(call);
   function decoder(names) {
     const nameOf = key => {
       const hex = String(key).replace(/^0x/, "");
       if (!/^[0-9a-f]{8}$/i.test(hex)) return key;
       const value = parseInt(hex, 16);
-      return names.get(String(value)) || `unknown:${value}`;
+      return names.get(value) || names.get(String(value)) || `unknown:${value}`;
     };
     const decode = (value, depth) => {
       if (value === null || value === undefined || depth > 8) return value;
@@ -52,7 +43,7 @@ export function createTacticAnalysisTools(call) {
   }
   return {
     get: args => context(args, async ({ tactic, effectiveness, complexity }) => {
-      const names = await propertyNames();
+      const names = await getPropertyMap();
       const decode = decoder(names);
       const read = channel => channel?.handle ? decode(channel.read?.value ?? null, 0) : null;
       return {
@@ -76,7 +67,7 @@ export function createTacticAnalysisTools(call) {
         TeamRequestingReport: { source: team.handle } };
       const visuals = await scope.subscribeOptional(team.handle, "OppositionReportVisuals", contexts);
       const report = await scope.subscribeOptional(team.handle, "OppositionReport", contexts);
-      const names = await propertyNames();
+      const names = await getPropertyMap();
       const decode = decoder(names);
       return {
         ok: true,

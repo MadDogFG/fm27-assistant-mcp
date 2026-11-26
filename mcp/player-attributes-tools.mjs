@@ -289,8 +289,7 @@ export function createPlayerAttributesTools(call) {
           const n = Number(m[0]);
           return Number.isFinite(n) ? n : null;
         };
-        for (let i = 0; i < squadTotalCount; i++) {
-          checkedCount++;
+        const scanOnePlayer = async i => {
           const pRef = { source: playersSub.handle, path: String(i) };
           const pCtx = { ...ctx, Person: pRef };
           const [condR, sharpR, moraleR] = await Promise.all([
@@ -306,19 +305,44 @@ export function createPlayerAttributesTools(call) {
           const condVal = condR.ok ? parseFiniteNum(condR.scalar) : null;
           const moraleVal = moraleR.ok ? parseFiniteNum(moraleR.scalar) : null;
 
-          if (condVal === null) unknownConditionCount++;
-          if (sharpVal === null) unknownSharpnessCount++;
-          if (moraleVal === null) unknownMoraleCount++;
-
           const reasons = [];
           if (condVal !== null && condVal < 80) reasons.push(`体能偏低(${condVal})`);
           if (sharpVal !== null && sharpVal < 50) reasons.push(`锐度偏低(${sharpVal})`);
           if (moraleVal !== null && moraleVal <= 11) reasons.push(`士气偏低(${moraleVal})`);
 
+          let alert = null;
           if (reasons.length > 0) {
-            const name = (await scope.readAndRelease(pRef, "Name", pCtx, 400)).scalar || `#${i}`;
-            const pos = (await scope.readAndRelease(pRef, "BestPositionShortString", pCtx, 400)).scalar || null;
-            alerts.push({ squadIndex: i, name, position: pos, condition: condVal, sharpness: sharpVal, morale: moraleVal, reasons });
+            const [nameR, posR] = await Promise.all([
+              scope.readAndRelease(pRef, "Name", pCtx, 400),
+              scope.readAndRelease(pRef, "BestPositionShortString", pCtx, 400)
+            ]);
+            alert = {
+              squadIndex: i,
+              name: nameR.scalar || `#${i}`,
+              position: posR.scalar || null,
+              condition: condVal,
+              sharpness: sharpVal,
+              morale: moraleVal,
+              reasons
+            };
+          }
+          return { condVal, sharpVal, moraleVal, alert };
+        };
+
+        // 受控 6 人微批并发（峰值句柄 ~18，远低于 128 上限），显著缩短赛前简报耗时
+        const SCAN_BATCH = 6;
+        for (let batchStart = 0; batchStart < squadTotalCount; batchStart += SCAN_BATCH) {
+          const batchIndices = [];
+          for (let i = batchStart; i < Math.min(squadTotalCount, batchStart + SCAN_BATCH); i++) {
+            batchIndices.push(i);
+          }
+          const results = await Promise.all(batchIndices.map(scanOnePlayer));
+          for (const r of results) {
+            checkedCount++;
+            if (r.condVal === null) unknownConditionCount++;
+            if (r.sharpVal === null) unknownSharpnessCount++;
+            if (r.moraleVal === null) unknownMoraleCount++;
+            if (r.alert) alerts.push(r.alert);
           }
         }
         await scope.release(playersSub.handle);
