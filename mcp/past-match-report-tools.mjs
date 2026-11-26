@@ -1,20 +1,10 @@
 import { createLiveClient, clean } from "./live-client.mjs";
+import { createPropertyRegistryCache } from "./core/property-registry.mjs";
 
-// 历史比赛事件、报告与评分只读工具组（MAT-R17）
+// 历史比赛事件、报告与评分只读工具组（MAT-R17，Review #45/#46）
 export function createPastMatchReportTools(call) {
   const client = createLiveClient(call);
-  let cachedIdMap = null;
-
-  async function getPropertyMap() {
-    if (cachedIdMap) return cachedIdMap;
-    try {
-      const reg = await call("/api/v1/internal/registry?kind=properties");
-      cachedIdMap = new Map((reg?.items || []).map(x => [x.id, x.name]));
-    } catch {
-      cachedIdMap = new Map();
-    }
-    return cachedIdMap;
-  }
+  const { getPropertyMap } = createPropertyRegistryCache(call);
 
   const stripTags = text => clean(text).replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").trim();
 
@@ -52,44 +42,92 @@ export function createPastMatchReportTools(call) {
 
       const fixturesSub = await scope.subscribeOptional({ source: team.handle }, "DataHubLastMatchFixtureDropdown", baseCtx, 1200);
       const fixturesList = fixturesSub.handle ? decodeValue(fixturesSub.read?.value, idMap) : null;
+      const rawItems = Array.isArray(fixturesSub.read?.value?.items) ? fixturesSub.read.value.items : [];
+      const availableFixturesCount = fixturesList?.count ?? rawItems.length;
 
-      // 尝试从赛果下拉中定位类型为 FM.UI.FixtureReference 的历史比赛引用
-      let matchRef = null;
-      let matchCtx = { ...baseCtx };
-      if (fixturesSub.handle && Array.isArray(fixturesSub.read?.value?.items) && fixturesSub.read.value.items.length > fixtureIndex) {
-        const row = fixturesSub.read.value.items[fixtureIndex];
-        const fields = row?.fields || {};
-        const fixEntry = Object.entries(fields).find(([, v]) => v?.type === "FM.UI.FixtureReference" || v?.kind === "reference");
-        if (fixEntry && fixEntry[1]?.identity) {
-          matchRef = { source: fixturesSub.handle, path: `${fixtureIndex}/${fixEntry[0]}` };
-          matchCtx = { ...baseCtx, fixture: matchRef, Fixture: matchRef, match: matchRef, Match: matchRef, InPossession: true };
-        }
+      if (!fixturesSub.handle || fixtureIndex >= rawItems.length) {
+        return {
+          ok: false,
+          found: false,
+          readOnly: true,
+          fixtureIndex,
+          availableFixturesCount,
+          error: !fixturesSub.handle
+            ? `未能获取历史赛果列表 DataHubLastMatchFixtureDropdown（${fixturesSub.unavailable || "no_handle"}）。`
+            : `历史赛果列表中不存在 fixtureIndex=${fixtureIndex}（当前可用共 ${availableFixturesCount} 场），未混入球队最近一场分析。`,
+          fixtures: fixturesList
+        };
       }
 
-      const teamReports = {};
-      for (const prop of ["LastMatchAnalysis", "IsFixtureResults"]) {
-        const sub = await scope.subscribeOptional({ source: team.handle }, prop, matchCtx, 1200);
-        teamReports[prop] = sub.handle ? decodeValue(sub.read?.value ?? null, idMap) : { unavailable: sub.unavailable || "no_handle" };
+      // Review #45: 严格只接受 FM.UI.FixtureReference，绝不接受行内排在前面的 TeamReference / CompReference 等任意引用
+      const row = rawItems[fixtureIndex];
+      const fields = row?.fields || {};
+      const fixEntry = Object.entries(fields).find(([, v]) => v?.type === "FM.UI.FixtureReference" && Boolean(v?.identity));
+      if (!fixEntry) {
+        return {
+          ok: false,
+          found: false,
+          readOnly: true,
+          fixtureIndex,
+          availableFixturesCount,
+          error: `第 ${fixtureIndex} 行赛果记录中未找到类型为 FM.UI.FixtureReference 的有效赛程引用（已拒绝将 TeamReference 等其他引用误认为赛程）。`,
+          observedRow: decodeValue(row, idMap),
+          fixtures: fixturesList
+        };
+      }
+
+      const fixtureIdentity = fixEntry[1].identity;
+      const matchRef = { source: fixturesSub.handle, path: `${fixtureIndex}/${fixEntry[0]}` };
+      const matchCtx = { ...baseCtx, fixture: matchRef, Fixture: matchRef, match: matchRef, Match: matchRef, InPossession: true };
+
+      // 尽量从赛果行与赛程引用上提取赛事、日期、对手元信息以供核验身份
+      const decodedRow = decodeValue(row, idMap);
+      const [dateR, compSub, homeSub, awaySub] = await Promise.all([
+        scope.readAndRelease(matchRef, "DateString", matchCtx, 500),
+        scope.subscribeOptional(matchRef, "Competition", matchCtx, 500),
+        scope.subscribeOptional(matchRef, "HomeTeam", matchCtx, 500),
+        scope.subscribeOptional(matchRef, "AwayTeam", matchCtx, 500)
+      ]);
+      const fixtureMetadata = {
+        fixtureIndex,
+        fixtureIdentity,
+        rowSummary: decodedRow,
+        date: dateR.scalar || null,
+        competition: compSub.handle ? await scope.resolveRefName(compSub.handle, matchCtx, 400).catch(() => null) : null,
+        homeTeam: homeSub.handle ? await scope.resolveRefName(homeSub.handle, matchCtx, 400).catch(() => null) : null,
+        awayTeam: awaySub.handle ? await scope.resolveRefName(awaySub.handle, matchCtx, 400).catch(() => null) : null
+      };
+
+      const matchDetails = {};
+      for (const prop of ["MatchReportData", "IsViewablePastMatch", "PastMatchHighlightsDropdown", "PastMatchPlayerTacticData", "PastMatchOOPPlayerDataAvailable"]) {
+        const sub = await scope.subscribeOptional(matchRef, prop, matchCtx, 1200);
+        matchDetails[prop] = sub.handle ? decodeValue(sub.read?.value ?? null, idMap) : { unavailable: sub.unavailable || "no_handle" };
         if (sub.handle) await scope.release(sub.handle);
       }
 
-      const matchDetails = {};
-      if (matchRef) {
-        for (const prop of ["MatchReportData", "IsViewablePastMatch", "PastMatchHighlightsDropdown", "PastMatchPlayerTacticData", "PastMatchOOPPlayerDataAvailable"]) {
-          const sub = await scope.subscribeOptional(matchRef, prop, matchCtx, 1200);
-          matchDetails[prop] = sub.handle ? decodeValue(sub.read?.value ?? null, idMap) : { unavailable: sub.unavailable || "no_handle" };
-          if (sub.handle) await scope.release(sub.handle);
-        }
+      // 球队层 LastMatchAnalysis 单独标注作用域，避免与指定 fixtureIndex 混淆
+      const teamLatestReports = {};
+      for (const prop of ["LastMatchAnalysis", "IsFixtureResults"]) {
+        const sub = await scope.subscribeOptional({ source: team.handle }, prop, matchCtx, 1200);
+        teamLatestReports[prop] = sub.handle ? decodeValue(sub.read?.value ?? null, idMap) : { unavailable: sub.unavailable || "no_handle" };
+        if (sub.handle) await scope.release(sub.handle);
       }
 
       return {
         ok: true,
+        found: true,
         readOnly: true,
         fixtureIndex,
-        availableFixturesCount: fixturesList?.count ?? 0,
+        fixtureIdentity,
+        fixtureMetadata,
+        availableFixturesCount,
         fixtures: fixturesList,
-        teamReports,
         matchDetails,
+        teamReports: {
+          scope: "team_latest_match_analysis",
+          note: "teamReports.LastMatchAnalysis 属于球队最近一场概览，核对具体历史场次请以 fixtureIdentity 与 matchDetails 为准。",
+          ...teamLatestReports
+        }
       };
     });
   }

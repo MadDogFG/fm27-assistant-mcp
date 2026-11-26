@@ -13,35 +13,30 @@ export function createTrainingUnitTools(call) {
         channels[property] = (await scope.subscribe(training.handle, property, contexts)).handle;
       return scope.api("/api/v1/training-management/units", { team: team.handle, training: training.handle, channels });
     }),
-    // TRN-O25a/b: 手动将指定球员移入或移出训练分组单元（Attacking/Defensive/Midfield/Goalkeeping）
-    manageMembership: async ({ squadIndex = 0, unit = "attacking", action = "add", operationId } = {}) => {
-      const unitMap = {
-        attacking: "AttackingUnit",
-        defensive: "DefensiveUnit",
-        midfield: "MidfieldUnit",
-        goalkeeping: "GoalkeepingUnit"
+    // Review #25: FM27 已调整旧版训练 Units 系统；当前构建缺失手动调组的合法原生 offered action，
+    // 禁止空参默认写入或向 EventFmxConfirmTrainingFocusChanges 派发自组载荷，仅保留 get_training_unit_summaries 只读
+    manageMembership: async ({ squadIndex, unit, action, operationId } = {}) => {
+      const validUnits = ["attacking", "defensive", "midfield", "goalkeeping"];
+      if (!unit || !validUnits.includes(unit)) {
+        throw new Error(`必须明确指定训练单元 unit（支持 ${validUnits.join("/")}）。`);
+      }
+      if (!action || !["add", "remove"].includes(action)) {
+        throw new Error("必须明确指定分组动作 action（支持 add/remove）。");
+      }
+      if (!Number.isInteger(squadIndex) || squadIndex < 0) {
+        throw new Error("必须提供有效的非负整数 squadIndex。");
+      }
+      return {
+        ok: false,
+        blocked: true,
+        unsupportedInFm27: true,
+        operationId: operationId || null,
+        squadIndex,
+        unit,
+        action,
+        reason: "FM27 已调整旧版训练 Units 手动分组机制，当前插件未验证可核对成员变更的合法原生调组事务（已拦截无依据的自组载荷派发）。只读查看请调用 get_training_unit_summaries。",
+        zeroDispatches: true
       };
-      const unitProp = unitMap[unit];
-      if (!unitProp) throw new Error(`未知训练单元: ${unit}（支持 attacking/defensive/midfield/goalkeeping）`);
-      if (!["add", "remove"].includes(action)) throw new Error(`未知分组动作: ${action}（支持 add/remove）`);
-      if (!Number.isInteger(squadIndex) || squadIndex < 0) throw new Error("squadIndex 必须为非负整数。");
-      const id = operationId || `unit_${action}_${unit}_${Date.now()}`;
-      return client.scope(async scope => {
-        const team = await scope.subscribe("human", "Team");
-        const human = { source: "human" }, teamRef = { source: team.handle };
-        const contexts = { Human: human, human, Team: teamRef, team: teamRef };
-        const players = await scope.subscribe(team.handle, "Players", contexts);
-        const count = players.read?.value?.count ?? 0;
-        if (squadIndex >= count) throw new Error(`squadIndex 越界: ${squadIndex} >= ${count}`);
-        const training = await scope.subscribe(team.handle, "TeamTraining", contexts);
-        const unitSub = await scope.subscribe(training.handle, unitProp, contexts);
-        // 使用合法的 InteropReference（training.handle）派发训练焦点与分组变更事件
-        const send = await call(
-          `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=EventFmxConfirmTrainingFocusChanges&source=${encodeURIComponent(training.handle)}&apply=true`,
-          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, unit, playerIndex: squadIndex }) }
-        );
-        return { ok: true, operationId: id, action, unit, unitProp, squadIndex, dispatch: send };
-      });
     }
   };
 }

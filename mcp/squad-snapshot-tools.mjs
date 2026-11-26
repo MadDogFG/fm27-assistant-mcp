@@ -1,8 +1,11 @@
 import { createLiveClient, clean, scalar } from "./live-client.mjs";
 
-// 一行一人紧凑阵容快照（get_squad_snapshot）
+// 一行一人紧凑阵容快照（get_squad_snapshot）与全量分页聚合缓存（Review #27/#28/#52/#54）
 export function createSquadSnapshotTools(call) {
   const client = createLiveClient(call);
+  // 同游戏日期、同球队的短 TTL 只读快照缓存（仅用于连续体检+排阵复用，绝不跨日期缓存，绝不作为写入令牌）
+  const fullSnapshotCache = new Map();
+  const CACHE_TTL_MS = 20_000;
 
   function extractPositionText(val) {
     if (!val) return null;
@@ -48,7 +51,18 @@ export function createSquadSnapshotTools(call) {
     return null;
   }
 
-  async function getSquadSnapshot({ offset = 0, limit = 30, includeContractAndStars = true } = {}) {
+  function parseTriBool(raw) {
+    if (raw === "True" || raw === true) return true;
+    if (raw === "False" || raw === false) return false;
+    return null;
+  }
+
+  async function getSquadSnapshot({
+    offset = 0,
+    limit = 30,
+    includeContractAndStars = true,
+    includeAvailability = true
+  } = {}) {
     const start = Math.max(0, Number(offset) || 0);
     const maxCount = Math.max(1, Math.min(50, Number(limit) || 30));
 
@@ -56,17 +70,26 @@ export function createSquadSnapshotTools(call) {
       const human = { source: "human" };
       const team = await scope.subscribe("human", "Team", { human, Human: human });
       const baseCtx = { human, Human: human, team: { source: team.handle }, Team: { source: team.handle } };
-      const playersSub = await scope.subscribeOptional({ source: team.handle }, "Players", baseCtx, 2000);
+      const [playersSub, dateR] = await Promise.all([
+        scope.subscribeOptional({ source: team.handle }, "Players", baseCtx, 2000),
+        scope.readAndRelease("game", "CurrentGameDate", {}, 500)
+      ]);
       const allItems = playersSub.read?.value?.items || [];
       const total = playersSub.read?.value?.count ?? allItems.length;
+      const teamIdentity = team.read?.value?.identity || null;
+      const gameDate = dateR.scalar || null;
 
       if (!playersSub.handle || total === 0) {
         return {
           ok: true,
           readOnly: true,
           degraded: !playersSub.handle,
+          teamIdentity,
+          gameDate,
           total: 0,
+          offset: start,
           returned: 0,
+          truncated: false,
           players: [],
           note: playersSub.handle ? "当前球队名单为空。" : `未能获取球队名单句柄（${playersSub.unavailable || "no_handle"}）`
         };
@@ -102,6 +125,25 @@ export function createSquadSnapshotTools(call) {
           sharpR = await scope.readAndRelease(pRef, "MatchSharpness", pCtx, 400);
         }
         const moraleR = await readRetry(pRef, "Morale", pCtx, 500);
+
+        // 读取伤停与出战资格字段（Review #28），保留三态 true/false/null（未知）
+        let injured = null;
+        let suspended = null;
+        let availability = null;
+        if (includeAvailability) {
+          const [injR, banR, availR] = await Promise.all([
+            scope.readAndRelease(pRef, "IsInjured", pCtx, 400),
+            scope.readAndRelease(pRef, "IsSuspended", pCtx, 400),
+            scope.readAndRelease(pRef, "PlayerAvailabilityStatus", pCtx, 400)
+          ]);
+          injured = injR.ok ? parseTriBool(injR.scalar) : null;
+          suspended = banR.ok ? parseTriBool(banR.scalar) : null;
+          if (suspended === null) {
+            const banAlt = await scope.readAndRelease(pRef, "IsBanned", pCtx, 350);
+            if (banAlt.ok) suspended = parseTriBool(banAlt.scalar);
+          }
+          availability = availR.ok ? (availR.scalar || null) : null;
+        }
 
         let position = posR.scalar || null;
         let caStars = null;
@@ -157,6 +199,7 @@ export function createSquadSnapshotTools(call) {
         if (!nameR.ok) degradedFields++;
         rows.push({
           index: i,
+          personIdentity: allItems[i]?.identity || null,
           name: nameR.scalar || `#${i}`,
           number: numR.scalar,
           age: ageR.scalar,
@@ -164,6 +207,7 @@ export function createSquadSnapshotTools(call) {
           condition: condR.scalar,
           sharpness: sharpR.scalar,
           morale: moraleR.scalar,
+          ...(includeAvailability ? { injured, suspended, ...(availability ? { availability } : {}) } : {}),
           ...(loanClub ? { loanClub } : {}),
           ...(includeContractAndStars ? { caStars, paStars, wage, contractExpires, playingTime } : {})
         });
@@ -172,6 +216,8 @@ export function createSquadSnapshotTools(call) {
       return {
         ok: true,
         readOnly: true,
+        teamIdentity,
+        gameDate,
         total,
         offset: start,
         returned: rows.length,
@@ -182,5 +228,89 @@ export function createSquadSnapshotTools(call) {
     });
   }
 
-  return { getSquadSnapshot };
+  // 读取当前日期与球队标识（极轻量，用于判断只读全量快照缓存是否属于同一游戏时点，绝不跨日期复用）
+  async function readSnapshotClock() {
+    return client.scope(async scope => {
+      const team = await scope.subscribeOptional("human", "Team", { human: { source: "human" } }, 1000);
+      const dateR = await scope.readAndRelease("game", "CurrentGameDate", {}, 500);
+      return {
+        teamIdentity: team.read?.value?.identity || null,
+        gameDate: dateR.scalar || null
+      };
+    }).catch(() => ({ teamIdentity: null, gameDate: null }));
+  }
+
+  // 全量分页读取整支一线队名单（Review #27/#52）：自动翻完所有页覆盖 30+ 球员，并支持同日期只读复用
+  async function getFullSquadSnapshot({
+    includeContractAndStars = true,
+    includeAvailability = true,
+    useCache = true,
+    pageSize = 30
+  } = {}) {
+    const safePageSize = Math.max(10, Math.min(50, Number(pageSize) || 30));
+    let clock = null;
+    if (useCache) {
+      clock = await readSnapshotClock();
+      if (clock.teamIdentity && clock.gameDate) {
+        const key = `${clock.teamIdentity}|${clock.gameDate}|c:${includeContractAndStars ? 1 : 0}|a:${includeAvailability ? 1 : 0}`;
+        const hit = fullSnapshotCache.get(key);
+        if (hit && Date.now() - hit.cachedAt < CACHE_TTL_MS) {
+          return { ...hit.snapshot, fromCache: true };
+        }
+      }
+    }
+
+    const allPlayers = [];
+    let offset = 0;
+    let total = 0;
+    let degraded = false;
+    let teamIdentity = clock?.teamIdentity || null;
+    let gameDate = clock?.gameDate || null;
+    let pagesRead = 0;
+    const maxPages = 6; // 最多覆写 300 人，防止异常死循环
+
+    while (pagesRead < maxPages) {
+      const page = await getSquadSnapshot({
+        offset,
+        limit: safePageSize,
+        includeContractAndStars,
+        includeAvailability
+      });
+      pagesRead++;
+      total = page.total ?? total;
+      if (page.teamIdentity) teamIdentity = page.teamIdentity;
+      if (page.gameDate) gameDate = page.gameDate;
+      if (page.degraded) degraded = true;
+      const batch = page.players || [];
+      allPlayers.push(...batch);
+      if (!page.truncated || batch.length === 0 || allPlayers.length >= total) break;
+      offset += batch.length;
+    }
+
+    const snapshot = {
+      ok: true,
+      readOnly: true,
+      teamIdentity,
+      gameDate,
+      total: Math.max(total, allPlayers.length),
+      returned: allPlayers.length,
+      pagesRead,
+      partial: allPlayers.length < total,
+      degraded,
+      fromCache: false,
+      players: allPlayers
+    };
+
+    if (useCache && teamIdentity && gameDate && !snapshot.partial && !snapshot.degraded) {
+      const key = `${teamIdentity}|${gameDate}|c:${includeContractAndStars ? 1 : 0}|a:${includeAvailability ? 1 : 0}`;
+      fullSnapshotCache.set(key, { cachedAt: Date.now(), snapshot });
+    }
+    return snapshot;
+  }
+
+  function clearCache() {
+    fullSnapshotCache.clear();
+  }
+
+  return { getSquadSnapshot, getFullSquadSnapshot, clearCache };
 }

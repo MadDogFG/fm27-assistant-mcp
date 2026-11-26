@@ -1,20 +1,10 @@
 import { createLiveClient, clean } from "./live-client.mjs";
+import { createPropertyRegistryCache } from "./core/property-registry.mjs";
 
-// 数据中心比赛分析报告与 TransferRoom 广告只读工具组（MAT-R24 / MAT-R27 / REC-R07）
+// 数据中心比赛分析报告与 TransferRoom 广告工具组（MAT-R24 / MAT-R27 / REC-R07 / REC-O11，Review #39/#46）
 export function createDatahubAndTransferRoomTools(call) {
   const client = createLiveClient(call);
-  let cachedIdMap = null;
-
-  async function getPropertyMap() {
-    if (cachedIdMap) return cachedIdMap;
-    try {
-      const reg = await call("/api/v1/internal/registry?kind=properties");
-      cachedIdMap = new Map((reg?.items || []).map(x => [x.id, x.name]));
-    } catch {
-      cachedIdMap = new Map();
-    }
-    return cachedIdMap;
-  }
+  const { getPropertyMap } = createPropertyRegistryCache(call);
 
   const stripTags = text => clean(text).replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").trim();
 
@@ -34,6 +24,10 @@ export function createDatahubAndTransferRoomTools(call) {
       return out;
     }
     return val;
+  }
+
+  function extractAdvertIdentity(item, index) {
+    return item?.identity || item?.fields?.["0x69642020"]?.value || `advert_idx:${index}`;
   }
 
   // MAT-R24 / MAT-R27: 读取数据中心近五场分析统计与最近一场详细分析报告
@@ -62,7 +56,7 @@ export function createDatahubAndTransferRoomTools(call) {
     });
   }
 
-  // REC-R07: 读取俱乐部 TransferRoom 已发布广告、应答及被推荐球员列表
+  // REC-R07: 读取俱乐部 TransferRoom 已发布广告、应答及被推荐球员列表（附每条广告的稳定身份标识）
   async function getTransferRoomAdverts() {
     const idMap = await getPropertyMap();
     return client.scope(async scope => {
@@ -73,6 +67,7 @@ export function createDatahubAndTransferRoomTools(call) {
         return { ok: true, readOnly: true, available: false, unavailable: trSub.unavailable || "no_transfer_room" };
       }
       const data = {};
+      let advertIdentities = [];
       for (const name of [
         "HumanAdvertsTotalCount",
         "HumanAdvertsList",
@@ -81,36 +76,93 @@ export function createDatahubAndTransferRoomTools(call) {
         "TransferRoomOfferedPlayers",
       ]) {
         const sub = await scope.subscribeOptional({ source: trSub.handle }, name, ctx, 1200);
+        if (name === "HumanAdvertsList" && sub.handle && Array.isArray(sub.read?.value?.items)) {
+          advertIdentities = sub.read.value.items.map((it, idx) => ({ index: idx, identity: extractAdvertIdentity(it, idx) }));
+        }
         data[name] = sub.handle ? decodeValue(sub.read?.value ?? null, idMap) : { unavailable: sub.unavailable || "no_handle" };
       }
       return {
         ok: true,
         readOnly: true,
         available: true,
+        clubIdentity: club.read?.value?.identity || null,
         transferRoomIdentity: trSub.read?.value?.identity || null,
+        advertIdentities,
         transferRoom: data,
       };
     });
   }
 
-  // REC-O11a/c: 管理 TransferRoom 招聘广告（选中、撤销、取消或提交非空广告草稿）
-  async function manageTransferRoomAdvert({ action = "select", advertIndex = 0, draft = null, operationId } = {}) {
+  // REC-O11a/c (Review #39): 严格校验非空原生草稿与广告/俱乐部身份；禁止空对象 `{}`、缺必填项或错俱乐部/过期广告派发
+  async function manageTransferRoomAdvert({
+    action,
+    advertIndex,
+    expectedAdvertIdentity,
+    expectedTransferRoomIdentity,
+    draft = null,
+    operationId
+  } = {}) {
     if (!["select", "delete", "cancel", "confirm"].includes(action)) {
-      throw new Error(`未知 TransferRoom 广告动作: ${action}（支持 select/delete/cancel/confirm）`);
+      throw new Error(`必须明确指定 TransferRoom 广告动作 action（支持 select/delete/cancel/confirm）。当前: ${action}`);
     }
-    if (action === "confirm" && (!draft || typeof draft !== "object")) {
-      throw new Error("为防止原生空草稿崩溃，confirm 必须提供非空有效 draft 对象。");
+    if (action === "confirm") {
+      if (!draft || typeof draft !== "object" || Array.isArray(draft) || Object.keys(draft).length === 0) {
+        throw new Error("为防止原生空草稿风险，confirm 必须提供非空有效原生 draft 对象（严禁传入 null、数组或空对象 {}）。");
+      }
+      // 必须来源于原生 $value/$reference 或包含明确的原生草稿结构字段，禁止伪造空壳对象
+      const hasNativeRef = Boolean(draft.$value || draft.$reference);
+      const hasNativeFields = Object.keys(draft).some(k => /^0x[0-9a-f]{8}$/i.test(k) || ["position", "transferType", "budget", "ageRange", "advertType"].includes(k));
+      if (!hasNativeRef && !hasNativeFields) {
+        throw new Error("confirm 的 draft 缺少原生草稿引用（$value/$reference）或必需业务字段，已拦截且零派发。");
+      }
+      if (!expectedTransferRoomIdentity || typeof expectedTransferRoomIdentity !== "string") {
+        throw new Error("confirm 必须提供 get_transfer_room_adverts 返回的 expectedTransferRoomIdentity，以防错俱乐部或过期会话提交。");
+      }
     }
+    if (action === "select" || action === "delete") {
+      if (!Number.isInteger(advertIndex) || advertIndex < 0) {
+        throw new Error(`${action} 必须提供有效的非负整数 advertIndex。`);
+      }
+      if (action === "delete" && (!expectedAdvertIdentity || typeof expectedAdvertIdentity !== "string")) {
+        throw new Error("删除 TransferRoom 广告必须提供 get_transfer_room_adverts 返回的 expectedAdvertIdentity，防止列表变化后误删他项。");
+      }
+    }
+
     const id = operationId || `tr_advert_${action}_${Date.now()}`;
     return client.scope(async scope => {
       const club = await scope.subscribe("human", "Club");
       const ctx = { human: { source: "human" }, club: { source: club.handle }, AdvertTransferType: 0 };
       const trSub = await scope.subscribeOptional({ source: club.handle }, "TransferRoom", ctx, 1500);
       if (!trSub.handle) throw new Error("当前俱乐部未提供 TransferRoom 对象。");
+      const liveTrIdentity = trSub.read?.value?.identity || null;
+      if (expectedTransferRoomIdentity && liveTrIdentity !== expectedTransferRoomIdentity) {
+        return {
+          ok: false,
+          blocked: true,
+          reason: "TransferRoom 会话或所属俱乐部身份已变化，已拒绝提交且零派发。",
+          expectedTransferRoomIdentity,
+          observedTransferRoomIdentity: liveTrIdentity,
+          zeroDispatches: true
+        };
+      }
       const listSub = await scope.subscribeOptional({ source: trSub.handle }, "HumanAdvertsList", ctx, 1000);
-      const total = listSub.read?.value?.count ?? 0;
-      if ((action === "select" || action === "delete") && (!Number.isInteger(advertIndex) || advertIndex < 0 || advertIndex >= total)) {
-        throw new Error(`TransferRoom 广告索引越界: advertIndex=${advertIndex}, total=${total}`);
+      const items = listSub.read?.value?.items || [];
+      const total = listSub.read?.value?.count ?? items.length;
+      if (action === "select" || action === "delete") {
+        if (advertIndex >= total) {
+          throw new Error(`TransferRoom 广告索引越界: advertIndex=${advertIndex}, total=${total}`);
+        }
+        const observedId = extractAdvertIdentity(items[advertIndex], advertIndex);
+        if (expectedAdvertIdentity && observedId !== expectedAdvertIdentity) {
+          return {
+            ok: false,
+            blocked: true,
+            reason: "TransferRoom 广告列表已变化，目标下标身份与 expectedAdvertIdentity 不符，已中止且零派发。",
+            expectedAdvertIdentity,
+            observedAdvertIdentity: observedId,
+            zeroDispatches: true
+          };
+        }
       }
       const eventMap = {
         select: "EventFmxTransferRoomSelectAdvert",
@@ -124,7 +176,15 @@ export function createDatahubAndTransferRoomTools(call) {
         `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=${encodeURIComponent(eventName)}&source=${encodeURIComponent(trSub.handle)}&apply=true`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }
       );
-      return { ok: true, operationId: id, action, eventName, beforeTotal: total, dispatch: send };
+      return {
+        ok: true,
+        operationId: id,
+        action,
+        eventName,
+        transferRoomIdentity: liveTrIdentity,
+        beforeTotal: total,
+        dispatch: send
+      };
     });
   }
 

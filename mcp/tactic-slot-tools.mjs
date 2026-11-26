@@ -132,16 +132,17 @@ export function createTacticSlotTools(call) {
         catch (error) { return { ...receipt, observationError: String(error.message || error), retrySafe: false, tacticManagementVerified: false }; }
       });
     },
-    // 一键读取或切换预设战术风格（直接更新原生 TacticalStyleDropdown 并读回验证心态/风格同步生效）
-    setStyle: async ({ style, previewOnly = false } = {}) => client.scope(async scope => {
+    // 一键读取或切换预设战术风格（精确匹配唯一 ID/标签或明确别名才执行；模糊多匹配返回候选零写入，支持槽位身份绑定防切槽误写）
+    setStyle: async ({ style, previewOnly = false, expectedSlotToken } = {}) => client.scope(async scope => {
       const { team, tactic } = await scope.tactic();
       const ctx = { human: { source: "human" }, Human: { source: "human" }, team: { source: team.handle }, Team: { source: team.handle } };
-      const [sStyle, sDD, sOpts, sRec, sMent] = await Promise.all([
+      const [sStyle, sDD, sOpts, sRec, sMent, sSlot] = await Promise.all([
         scope.subscribe(tactic.handle, "TacticalStyle", ctx),
         scope.subscribe(tactic.handle, "TacticalStyleDropdown", ctx),
         scope.subscribe(tactic.handle, "TacticalStyleDropdownOptions", ctx),
         scope.subscribeOptional(tactic.handle, "TopThreeRecommendedTacticalStyles", ctx, 800),
-        scope.subscribeOptional(tactic.handle, "Mentality", ctx, 800)
+        scope.subscribeOptional(tactic.handle, "Mentality", ctx, 800),
+        scope.subscribeOptional(tactic.handle, "CurrentTacticSlot", ctx, 800)
       ]);
       const rawItems = sOpts.read?.value?.items || [];
       const options = rawItems.map((item, idx) => ({
@@ -150,7 +151,12 @@ export function createTacticSlotTools(call) {
         label: stripStyleText(item.fields?.["0x71764a36"]?.value || "")
       }));
       const hasActiveTactic = Boolean(sDD.read?.value && sDD.read.value.kind === "record");
+      const tacticIdentity = tactic.read?.value?.identity || null;
+      const currentSlot = sSlot.handle ? String(scalar(sSlot.read?.value) ?? "") : null;
+      const slotToken = `${tacticIdentity || "tactic"}|slot:${currentSlot ?? "unknown"}|style:${String(scalar(sStyle.read?.value) ?? "")}`;
       const current = {
+        tacticIdentity,
+        currentSlot,
         styleId: String(scalar(sStyle.read?.value) ?? ""),
         dropdownId: String(sDD.read?.value?.fields?.["0x7074766c"]?.value ?? ""),
         label: stripStyleText(sDD.read?.value?.fields?.["0x71764a36"]?.value || ""),
@@ -160,7 +166,15 @@ export function createTacticSlotTools(call) {
       const recommendedIds = (sRec.read?.value?.items || []).map(x => String(x?.value ?? x)).filter(Boolean);
 
       if (style === undefined || style === null || style === "" || previewOnly) {
-        return { ok: true, readOnly: true, current, recommendedIds, options };
+        return {
+          ok: true,
+          readOnly: true,
+          slotToken,
+          current,
+          recommendedIds,
+          options,
+          sideEffectWarning: "切换战术预设风格会同步重设球队默认指令，写入前请确认目标精确 ID 或完整标签，并可携带 slotToken 防止玩家切槽后误写。"
+        };
       }
 
       if (!hasActiveTactic) {
@@ -175,18 +189,70 @@ export function createTacticSlotTools(call) {
         };
       }
 
-      // 解析目标风格（支持数字 ID、中文标签、英文别名模糊匹配）
+      if (expectedSlotToken && expectedSlotToken !== slotToken) {
+        return {
+          ok: false,
+          verified: false,
+          blockedReason: "tactic_slot_changed",
+          error: "预览后当前战术槽位或风格状态已发生变化，已拒绝向旧目标写入。",
+          expectedSlotToken,
+          currentSlotToken: slotToken,
+          before: current
+        };
+      }
+
+      // 严格解析目标风格（Review #23）：
+      // 1) 优先精确匹配原生 id 或完整标签（忽略大小写）
+      // 2) 其次精确匹配某单条别名的完整字符串
+      // 3) 模糊包含匹配若命中多个候选（例如“防反”同时命中“灵活防反”和“快速防反”），绝不盲取第一项，而是返回全部候选并零写入
       const q = stripStyleText(String(style)).toLowerCase();
-      let target = options.find(o => o.id === q || o.label.toLowerCase() === q);
+      let target = options.find(o => o.id === q || o.label.toLowerCase() === q) || null;
       if (!target) {
-        target = options.find(o => o.label.toLowerCase().includes(q));
+        const exactAliasIds = Object.entries(TACTICAL_STYLE_ALIASES)
+          .filter(([, aliases]) => aliases.some(a => a.toLowerCase() === q))
+          .map(([id]) => id);
+        if (exactAliasIds.length === 1) {
+          target = options.find(o => o.id === exactAliasIds[0]) || null;
+        }
       }
       if (!target) {
+        const fuzzySet = new Map();
+        for (const o of options) {
+          if (o.label.toLowerCase().includes(q)) fuzzySet.set(o.id, o);
+        }
         for (const [id, aliases] of Object.entries(TACTICAL_STYLE_ALIASES)) {
           if (aliases.some(a => a.includes(q) || q.includes(a))) {
-            target = options.find(o => o.id === id);
-            if (target) break;
+            const matched = options.find(o => o.id === id);
+            if (matched) fuzzySet.set(matched.id, matched);
           }
+        }
+        const candidates = [...fuzzySet.values()];
+        if (candidates.length > 1) {
+          return {
+            ok: false,
+            verified: false,
+            ambiguous: true,
+            blockedReason: "ambiguous_tactical_style",
+            error: `输入 "${style}" 模糊匹配到 ${candidates.length} 个预设战术风格，且切换预设可能重设球队指令；已拒绝盲写第一项，请传入精确 ID 或完整标签。`,
+            candidates,
+            slotToken,
+            before: current,
+            sideEffectWarning: "套用预设战术风格可能会重置当前球队指令与心态。"
+          };
+        }
+        if (candidates.length === 1) {
+          // 单一模糊缩写（非精确 ID/完整标签）也要求用户确认完整标签或 ID，防止误触重设球队指令
+          return {
+            ok: false,
+            verified: false,
+            ambiguous: true,
+            blockedReason: "non_exact_tactical_style",
+            error: `输入 "${style}" 仅为模糊片段而非原生精确 ID 或完整标签；为防意外重设球队指令，请改用精确值 id="${candidates[0].id}" 或 label="${candidates[0].label}"。`,
+            candidates,
+            slotToken,
+            before: current,
+            sideEffectWarning: "套用预设战术风格可能会重置当前球队指令与心态。"
+          };
         }
       }
       if (!target) {

@@ -32,13 +32,20 @@ function matchesPosition(posText, query) {
   return false;
 }
 
-// 保存的球员搜索与过滤器管理（REC-O29a 保存、REC-O29b 重用、REC-O29c 删除/重置）+ 多条件数据库搜索
+// 生成结果列表头部签名，用于判定全局搜索是否真正完成了新查询刷新（Review #37）
+function searchListSignature(listVal) {
+  const count = listVal?.count ?? listVal?.items?.length ?? 0;
+  const headIds = (listVal?.items || []).slice(0, 5).map(it => it?.identity || "").join(",");
+  return `${count}|${headIds}`;
+}
+
+// 保存的球员搜索与过滤器管理（REC-O29a/b/c）+ 多条件数据库搜索（Review #37）
 export function createPlayerSearchFilterTools(call) {
   const client = createLiveClient(call);
 
   // 多条件数据库球员搜索：
-  // - 当提供 name 时优先走全库原生 game.Search (FM.UI.SearchReference) + RowData 毫秒级直达全库任意球员；
-  // - 未提供 name 时基于 HumanPersonSearch.PersonList 并发扫描与多条件筛选
+  // - 提供 name 时通过 game.Search 检索，执行前后保护并还原玩家原有搜索词（若玩家中途改词则绝不覆盖），严格校验结果已刷新，支持 offset 续查
+  // - 未提供 name 时基于 HumanPersonSearch.PersonList 并发扫描与多条件筛选，支持 offset 续查
   async function searchPlayers({
     searchType = 1,
     name = "",
@@ -51,12 +58,15 @@ export function createPlayerSearchFilterTools(call) {
     minHeight,
     maxHeight,
     sortBy = "default",
+    offset = 0,
     scanLimit = 150,
     limit = 15
   } = {}) {
     const safeLimit = Math.max(1, Math.min(40, Number(limit) || 15));
+    const safeOffset = Math.max(0, Number.isInteger(offset) ? offset : 0);
     const safeScan = Math.max(1, Math.min(350, Number(scanLimit) || 150));
-    const nameQ = cleanText(name).toLowerCase();
+    const nameRaw = cleanText(name);
+    const nameQ = nameRaw.toLowerCase();
     const posQ = cleanText(position);
     const natQ = cleanText(nationality).toLowerCase();
     const clubQ = cleanText(club).toLowerCase();
@@ -128,7 +138,7 @@ export function createPlayerSearchFilterTools(call) {
         };
       }
 
-      // 优先路径：提供姓名关键词时，走 game.Search 全局原生搜索，毫秒级直达全库任意球员
+      // 优先路径：提供姓名关键词时，走 game.Search 全局原生搜索（Review #37：防污染玩家搜索词 + 防旧结果冒充 + 真实 scanned 与续查）
       if (nameQ) {
         const gs = await scope.subscribeOptional("game", "Search", { human: { source: "human" } }, 1200);
         if (gs.handle) {
@@ -136,70 +146,173 @@ export function createPlayerSearchFilterTools(call) {
           const sList = await scope.subscribeOptional(gs.handle, "PersonList", {}, 800);
           if (sName.handle && sList.handle) {
             const sDone = await scope.subscribeOptional(gs.handle, "SearchIsFinished", {}, 600);
-            const beforeFirstId = (await scope.ready(sList.handle)).value?.items?.[0]?.identity || "";
-            await call(`/api/v1/internal/update?handle=${encodeURIComponent(sName.handle)}&apply=true`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(cleanText(name))
-            });
-            // 等待游戏搜索引擎完成刷新（避免搜不到人时误返回上一次搜索的残留缓存）
-            let listVal = null;
-            for (let attempt = 0; attempt < 7; attempt++) {
-              await new Promise(r => setTimeout(r, attempt === 0 ? 450 : 200));
-              listVal = (await scope.ready(sList.handle)).value;
-              const doneVal = sDone.handle ? String(scalar((await scope.ready(sDone.handle)).value) ?? "") : "True";
-              const curFirstId = listVal?.items?.[0]?.identity || "";
-              if (doneVal.toLowerCase() === "true" && (curFirstId !== beforeFirstId || attempt >= 2)) break;
-            }
-            if (sDone.handle) await scope.release(sDone.handle).catch(() => {});
-            const totalHits = listVal?.count || 0;
-            const toInspect = Math.min(totalHits, safeLimit * 2, 40);
-            const matched = [];
-            for (let i = 0; i < toInspect; i++) {
-              const rowSub = await scope.subscribeOptional({ source: sList.handle, path: String(i) }, "RowData", ctx, 700);
-              if (!rowSub.handle || rowSub.read?.value?.type !== "FM.UI.PersonReference") {
-                if (rowSub.handle) await scope.release(rowSub.handle).catch(() => {});
-                continue;
+            const beforeSearchName = cleanText(scalar(sName.read?.value) ?? "");
+            const beforeListSig = searchListSignature((await scope.ready(sList.handle)).value);
+            const sameQueryAsBefore = beforeSearchName.toLowerCase() === nameQ;
+            let searchRestoreStatus = { status: "not_needed" };
+            let wroteSearchName = false;
+
+            try {
+              if (!sameQueryAsBefore) {
+                await call(`/api/v1/internal/update?handle=${encodeURIComponent(sName.handle)}&apply=true`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(nameRaw)
+                });
+                wroteSearchName = true;
               }
-              const descR = await scope.readAndRelease({ source: sList.handle, path: String(i) }, "Description", {}, 400);
-              const row = await inspectAndFilter(
-                { source: rowSub.handle },
-                i,
-                {
-                  personIdentity: rowSub.read?.value?.identity || null,
-                  summary: cleanText(descR.scalar || "") || null
+
+              // 严格等待游戏搜索完成并确认结果已刷新（列表签名变化或原本即相同查询词且 SearchIsFinished=True）
+              let listVal = null;
+              let searchRefreshed = sameQueryAsBefore;
+              let interruptedByPlayer = false;
+              let observedPlayerQuery = null;
+
+              for (let attempt = 0; attempt < 8; attempt++) {
+                await new Promise(r => setTimeout(r, attempt === 0 ? (sameQueryAsBefore ? 50 : 350) : 180));
+                const curNameVal = cleanText(scalar((await scope.ready(sName.handle, undefined, 800)).value) ?? "");
+                if (curNameVal.toLowerCase() !== nameQ) {
+                  interruptedByPlayer = true;
+                  observedPlayerQuery = curNameVal;
+                  break;
                 }
-              );
-              await scope.release(rowSub.handle).catch(() => {});
-              if (row) matched.push(row);
-              if (!needFullScan && matched.length >= safeLimit) break;
+                listVal = (await scope.ready(sList.handle, undefined, 1000)).value;
+                const doneVal = sDone.handle ? String(scalar((await scope.ready(sDone.handle, undefined, 800)).value) ?? "") : "True";
+                const curSig = searchListSignature(listVal);
+                const sigChanged = curSig !== beforeListSig;
+                if (doneVal.toLowerCase() === "true" && (sameQueryAsBefore || sigChanged || (listVal?.count === 0 && attempt >= 1))) {
+                  searchRefreshed = true;
+                  break;
+                }
+              }
+
+              if (interruptedByPlayer) {
+                return {
+                  ok: false,
+                  status: "search_interrupted_by_player",
+                  requestedName: nameRaw,
+                  observedSearchName: observedPlayerQuery,
+                  error: `搜索期间游戏搜索框关键词已被修改为 "${observedPlayerQuery}"，已中止并保留玩家当前搜索。`
+                };
+              }
+              if (!searchRefreshed) {
+                return {
+                  ok: false,
+                  status: "search_not_ready",
+                  requestedName: nameRaw,
+                  error: `全局搜索 "${nameRaw}" 未确认刷新完成（结果列表仍与旧搜索完全一致或未结束），已拒绝将旧结果冒充为本次命中。`
+                };
+              }
+
+              const totalHits = listVal?.count ?? (listVal?.items?.length || 0);
+              const scanStart = Math.min(totalHits, safeOffset);
+              const maxToInspect = Math.min(totalHits, scanStart + Math.min(safeScan, Math.max(safeLimit * 2, 40)));
+              const matched = [];
+              let actualScanned = 0;
+              let lastInspectedIndex = scanStart;
+
+              for (let i = scanStart; i < maxToInspect; i++) {
+                // 检查玩家是否在中途修改了搜索框
+                if (i > scanStart && (i - scanStart) % 10 === 0) {
+                  const midName = cleanText(scalar((await scope.ready(sName.handle, undefined, 600)).value) ?? "");
+                  if (midName.toLowerCase() !== nameQ) {
+                    return {
+                      ok: false,
+                      status: "search_interrupted_by_player",
+                      requestedName: nameRaw,
+                      observedSearchName: midName,
+                      error: `扫描期间搜索框已被玩家改为 "${midName}"，已停止并返回失败以防混入新搜索结果。`
+                    };
+                  }
+                }
+                actualScanned++;
+                lastInspectedIndex = i + 1;
+                const rowSub = await scope.subscribeOptional({ source: sList.handle, path: String(i) }, "RowData", ctx, 700);
+                if (!rowSub.handle || rowSub.read?.value?.type !== "FM.UI.PersonReference") {
+                  if (rowSub.handle) await scope.release(rowSub.handle).catch(() => {});
+                  continue;
+                }
+                const descR = await scope.readAndRelease({ source: sList.handle, path: String(i) }, "Description", {}, 400);
+                const row = await inspectAndFilter(
+                  { source: rowSub.handle },
+                  i,
+                  {
+                    personIdentity: rowSub.read?.value?.identity || null,
+                    summary: cleanText(descR.scalar || "") || null
+                  }
+                );
+                await scope.release(rowSub.handle).catch(() => {});
+                if (row) matched.push(row);
+                if (!needFullScan && matched.length >= safeLimit) break;
+              }
+
+              if (sortBy === "age_asc") matched.sort((a, b) => (a.age ?? 99) - (b.age ?? 99));
+              else if (sortBy === "age_desc") matched.sort((a, b) => (b.age ?? 0) - (a.age ?? 0));
+              else if (sortBy === "height_desc") matched.sort((a, b) => (b.heightCm ?? 0) - (a.heightCm ?? 0));
+              const players = matched.slice(0, safeLimit);
+              const partialScan = lastInspectedIndex < totalHits;
+
+              // 读取结束后在 return 前先恢复原搜索词，以便把恢复状态写入响应
+              if (wroteSearchName) {
+                try {
+                  const currentNameNow = cleanText(scalar((await scope.ready(sName.handle, undefined, 600)).value) ?? "");
+                  if (currentNameNow.toLowerCase() !== nameQ) {
+                    searchRestoreStatus = { status: "preserved_player_search", currentSearchName: currentNameNow };
+                  } else {
+                    await call(`/api/v1/internal/update?handle=${encodeURIComponent(sName.handle)}&apply=true`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(beforeSearchName)
+                    });
+                    wroteSearchName = false;
+                    searchRestoreStatus = { status: "restored", restoredSearchName: beforeSearchName };
+                  }
+                } catch (restoreErr) {
+                  searchRestoreStatus = { status: "restore_failed", error: String(restoreErr?.message || restoreErr) };
+                }
+              }
+
+              return {
+                ok: true,
+                readOnly: true,
+                searchMode: "global_database_search",
+                totalInDatabase: totalHits,
+                scanStart,
+                scanned: actualScanned,
+                partialScan,
+                nextOffset: partialScan ? lastInspectedIndex : null,
+                matchedCount: matched.length,
+                returnedCount: players.length,
+                searchBoxRestore: searchRestoreStatus,
+                filters: {
+                  name: nameRaw,
+                  position: posQ || null,
+                  minAge: minAge ?? null,
+                  maxAge: maxAge ?? null,
+                  nationality: natQ || null,
+                  club: clubQ || null,
+                  freeAgentOnly: Boolean(freeAgentOnly),
+                  minHeight: minHeight ?? null,
+                  maxHeight: maxHeight ?? null,
+                  sortBy
+                },
+                players
+              };
+            } finally {
+              if (wroteSearchName) {
+                try {
+                  const cur = cleanText(scalar((await scope.ready(sName.handle, undefined, 500)).value) ?? "");
+                  if (cur.toLowerCase() === nameQ) {
+                    await call(`/api/v1/internal/update?handle=${encodeURIComponent(sName.handle)}&apply=true`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(beforeSearchName)
+                    });
+                  }
+                } catch {}
+              }
+              if (sDone.handle) await scope.release(sDone.handle).catch(() => {});
             }
-            if (sortBy === "age_asc") matched.sort((a, b) => (a.age ?? 99) - (b.age ?? 99));
-            else if (sortBy === "age_desc") matched.sort((a, b) => (b.age ?? 0) - (a.age ?? 0));
-            else if (sortBy === "height_desc") matched.sort((a, b) => (b.heightCm ?? 0) - (a.heightCm ?? 0));
-            const players = matched.slice(0, safeLimit);
-            return {
-              ok: true,
-              readOnly: true,
-              searchMode: "global_database_search",
-              totalInDatabase: totalHits,
-              scanned: toInspect,
-              matchedCount: matched.length,
-              returnedCount: players.length,
-              filters: {
-                name: cleanText(name),
-                position: posQ || null,
-                minAge: minAge ?? null,
-                maxAge: maxAge ?? null,
-                nationality: natQ || null,
-                club: clubQ || null,
-                freeAgentOnly: Boolean(freeAgentOnly),
-                minHeight: minHeight ?? null,
-                maxHeight: maxHeight ?? null,
-                sortBy
-              },
-              players
-            };
           }
         }
       }
@@ -210,13 +323,15 @@ export function createPlayerSearchFilterTools(call) {
       }
       const pl = await scope.subscribeOptional(personSearch.handle, "PersonList", ctx, 1500);
       const totalInDatabase = pl.read?.value?.count ?? (pl.read?.value?.items?.length || 0);
-      const toScan = Math.min(totalInDatabase, safeScan);
+      const scanStart = Math.min(totalInDatabase, safeOffset);
+      const toScan = Math.min(totalInDatabase, scanStart + safeScan);
 
       const matched = [];
       let scanned = 0;
+      let lastScanned = scanStart;
       const batchSize = 10;
 
-      for (let start = 0; start < toScan; start += batchSize) {
+      for (let start = scanStart; start < toScan; start += batchSize) {
         const end = Math.min(toScan, start + batchSize);
         const batchIndices = [];
         for (let i = start; i < end; i++) batchIndices.push(i);
@@ -229,10 +344,10 @@ export function createPlayerSearchFilterTools(call) {
         }));
 
         scanned += batchIndices.length;
+        lastScanned = end;
         for (const r of batchRows) {
           if (r) matched.push(r);
         }
-        // 不要求全局排序时，命中数量足够即可提前终止扫描提速
         if (!needFullScan && matched.length >= safeLimit) break;
       }
 
@@ -241,12 +356,16 @@ export function createPlayerSearchFilterTools(call) {
       else if (sortBy === "height_desc") matched.sort((a, b) => (b.heightCm ?? 0) - (a.heightCm ?? 0));
 
       const players = matched.slice(0, safeLimit);
+      const partialScan = lastScanned < totalInDatabase;
       return {
         ok: true,
         readOnly: true,
         searchMode: "scouting_pool_scan",
         totalInDatabase,
+        scanStart,
         scanned,
+        partialScan,
+        nextOffset: partialScan ? lastScanned : null,
         matchedCount: matched.length,
         returnedCount: players.length,
         filters: {
@@ -351,7 +470,6 @@ export function createPlayerSearchFilterTools(call) {
     };
     const eventName = eventMap[action][scopeKind];
 
-    // 若为 save，先同步设置搜索名称事件（EventFmxSearchSetName）
     let setNameDispatch = null;
     if (action === "save" && trimmedName) {
       setNameDispatch = await call(

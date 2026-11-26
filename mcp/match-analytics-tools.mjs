@@ -1,25 +1,15 @@
 import { createLiveClient, clean, scalar } from "./live-client.mjs";
+import { createPropertyRegistryCache } from "./core/property-registry.mjs";
 
-// 比赛实时数据分析与事件、xG、动量、传球网络、球员统计只读工具组
+// 比赛实时数据分析与事件、xG、动量、传球网络、球员统计只读工具组（Review #44/#46/#53）
 export function createMatchAnalyticsTools(call) {
   const client = createLiveClient(call);
-  let cachedIdMap = null;
-
-  async function getPropertyMap() {
-    if (cachedIdMap) return cachedIdMap;
-    try {
-      const reg = await call("/api/v1/internal/registry?kind=properties");
-      cachedIdMap = new Map((reg?.items || []).map(item => [item.id, item.name]));
-    } catch {
-      cachedIdMap = new Map();
-    }
-    return cachedIdMap;
-  }
+  const { getPropertyMap } = createPropertyRegistryCache(call);
 
   // 清理 FM 原生富文本超链接标记（\u0001...\u0002文本\u0001）
   const stripFmTags = text => clean(text).replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").trim();
 
-  // 递归解码 SI.Bindable.DynamicReference 的 0x... 字段名为可读属性名
+  // 递归解码 SI.Bindable.DynamicReference 的 0x... 字段名为可读属性名（保留无法解码的原始键）
   function decodeValue(val, idMap) {
     if (val === null || val === undefined) return val;
     if (typeof val !== "object") return val;
@@ -60,8 +50,36 @@ export function createMatchAnalyticsTools(call) {
     return state;
   }
 
-  // MAT-R10 / MAT-R11 / MAT-R28: 球队实时统计、xG 与射门图、比赛基础观众/比分/裁判
+  // 构建采样时间窗元数据（Review #53），明确比赛身份、开始/结束分钟与阶段跨度
+  async function buildSamplingWindow(startState, startedAtMs) {
+    const endState = await call("/api/v1/match/state").catch(() => null);
+    const startMinute = startState?.minute ?? null;
+    const endMinute = endState?.minute ?? startMinute;
+    const startPhase = startState?.continueState ?? null;
+    const endPhase = endState?.continueState ?? startPhase;
+    const matchIdentity = startState?.matchIdentity ?? startState?.fixtureIdentity ?? endState?.matchIdentity ?? null;
+    const spannedBoundary =
+      (startMinute !== null && endMinute !== null && startMinute !== endMinute) ||
+      (startPhase !== null && endPhase !== null && startPhase !== endPhase) ||
+      (startState?.matchIdentity && endState?.matchIdentity && startState.matchIdentity !== endState.matchIdentity);
+    return {
+      matchIdentity,
+      samplingWindow: {
+        startedAt: new Date(startedAtMs).toISOString(),
+        endedAt: new Date().toISOString(),
+        startMinute,
+        endMinute,
+        startContinueState: startPhase,
+        endContinueState: endPhase,
+        spannedBoundary: Boolean(spannedBoundary)
+      }
+    };
+  }
+
+  // MAT-R10 / MAT-R11 / MAT-R28 (Review #44/#53): 球队实时统计与 xG；
+  // 严禁在实时 Stats 未就绪时回退读取已知恒为 0/50% 的静态 HomeShots/HomePossession 伪装为实时统计
   async function teamStatsAndXg({ includeShotMap = false, compact = true } = {}) {
+    const startedAtMs = Date.now();
     const state = await requireInMatch();
     const idMap = await getPropertyMap();
     return client.scope(async scope => {
@@ -71,13 +89,19 @@ export function createMatchAnalyticsTools(call) {
         const comps = await scope.subscribeOptional({ source: team.handle }, "CurrentComps", { human: { source: "human" }, team: { source: team.handle } }, 1000);
         if (comps.read?.value?.items?.length) contexts.Competition = { source: comps.handle, path: "0" };
       }
-      // 读取直播实时 Stats(isHomeTeam: true/false)，替代比赛进行中恒为 0/50% 的静态 HomeShots/HomePossession 字段
+
       const [homeLiveSub, awayLiveSub] = await Promise.all([
         scope.subscribeOptional("match", "Stats", { ...contexts, isHomeTeam: true }, 1500),
         scope.subscribeOptional("match", "Stats", { ...contexts, isHomeTeam: false }, 1500)
       ]);
       const homeLive = homeLiveSub.handle ? decodeValue(homeLiveSub.read?.value ?? null, idMap) : null;
       const awayLive = awayLiveSub.handle ? decodeValue(awayLiveSub.read?.value ?? null, idMap) : null;
+      const homeStatus = homeLive && typeof homeLive === "object"
+        ? { available: true, source: "live_match_stats", unavailable: null }
+        : { available: false, source: "live_match_stats", unavailable: homeLiveSub.unavailable || "stats_unavailable" };
+      const awayStatus = awayLive && typeof awayLive === "object"
+        ? { available: true, source: "live_match_stats", unavailable: null }
+        : { available: false, source: "live_match_stats", unavailable: awayLiveSub.unavailable || "stats_unavailable" };
       if (homeLiveSub.handle) await scope.release(homeLiveSub.handle).catch(() => {});
       if (awayLiveSub.handle) await scope.release(awayLiveSub.handle).catch(() => {});
 
@@ -86,32 +110,27 @@ export function createMatchAnalyticsTools(call) {
         "MatchLastFiveMinutesPossession",
         "Attendance", "AnnouncedAttendance", "XgValue"
       ];
-      if (!homeLive || !awayLive) {
-        fields.push(
-          "HomePossession", "AwayPossession",
-          "HomeShots", "AwayShots", "HomeShotsOnTarget", "AwayShotsOnTarget",
-          "HomeCorners", "AwayCorners", "HomeFouls", "AwayFouls"
-        );
-      }
       if (includeShotMap) fields.push("HomeShotMap", "AwayShotMap");
       const data = await readMatchProps(scope, fields, { ...contexts, isHomeTeam: state.isHomeTeam }, idMap);
 
-      // 若成功读到实时 Stats(isHomeTeam)，回填所有兼容字段并提供完整结构化主客队实时统计
-      if (homeLive && awayLive && typeof homeLive === "object" && typeof awayLive === "object") {
-        data.HomePossession = homeLive.BallShare ?? homeLive.TotalPossession ?? data.HomePossession;
-        data.AwayPossession = awayLive.BallShare ?? awayLive.TotalPossession ?? data.AwayPossession;
-        data.HomeShots = homeLive.TotalShots ?? data.HomeShots;
-        data.AwayShots = awayLive.TotalShots ?? data.AwayShots;
-        data.HomeShotsOnTarget = homeLive.ShotsOnTarget ?? data.HomeShotsOnTarget;
-        data.AwayShotsOnTarget = awayLive.ShotsOnTarget ?? data.AwayShotsOnTarget;
-        data.HomeCorners = homeLive.Corners ?? data.HomeCorners;
-        data.AwayCorners = awayLive.Corners ?? data.AwayCorners;
-        data.HomeFouls = homeLive.FoulsMade ?? data.HomeFouls;
-        data.AwayFouls = awayLive.FoulsMade ?? data.AwayFouls;
+      // 按各自通道真实可用状态填充兼容字段，绝不拿恒为 0/50% 的静态字段冒充缺失侧数据
+      if (homeStatus.available) {
+        data.HomePossession = homeLive.BallShare ?? homeLive.TotalPossession ?? null;
+        data.HomeShots = homeLive.TotalShots ?? null;
+        data.HomeShotsOnTarget = homeLive.ShotsOnTarget ?? null;
+        data.HomeCorners = homeLive.Corners ?? null;
+        data.HomeFouls = homeLive.FoulsMade ?? null;
+      }
+      if (awayStatus.available) {
+        data.AwayPossession = awayLive.BallShare ?? awayLive.TotalPossession ?? null;
+        data.AwayShots = awayLive.TotalShots ?? null;
+        data.AwayShotsOnTarget = awayLive.ShotsOnTarget ?? null;
+        data.AwayCorners = awayLive.Corners ?? null;
+        data.AwayFouls = awayLive.FoulsMade ?? null;
       }
 
-      // 紧凑模式下对 XgValue 巨型对象做瘦身，只保留比分/xG 文本与摘要，省 Token
-      if (compact && data.XgValue && typeof data.XgValue === "object") {
+      // 紧凑模式下保留 { unavailable } 诊断，绝不把 unavailable 转成一堆 null 误导为“0 xG”（Review #44）
+      if (compact && data.XgValue && typeof data.XgValue === "object" && !data.XgValue.unavailable) {
         data.XgValue = {
           xg: data.XgValue.XgValue ?? null,
           score: data.XgValue.MatchScore ?? null,
@@ -150,11 +169,20 @@ export function createMatchAnalyticsTools(call) {
         const nameSub = await scope.subscribeOptional({ source: refSub.handle }, "Name", {}, 800);
         refereeName = stripFmTags(scalar(nameSub.read?.value)) || null;
       }
+      const timing = await buildSamplingWindow(state, startedAtMs);
+      const degraded = !homeStatus.available || !awayStatus.available;
       return {
-        ok: true, readOnly: true, minute: state.minute, continueState: state.continueState,
-        isHomeTeam: state.isHomeTeam, refereeName,
-        homeTeamLiveStats: compact ? pickSummary(homeLive) : homeLive,
-        awayTeamLiveStats: compact ? pickSummary(awayLive) : awayLive,
+        ok: true,
+        readOnly: true,
+        degraded,
+        minute: state.minute,
+        continueState: state.continueState,
+        isHomeTeam: state.isHomeTeam,
+        ...timing,
+        refereeName,
+        sideAvailability: { home: homeStatus, away: awayStatus },
+        homeTeamLiveStats: homeStatus.available ? (compact ? pickSummary(homeLive) : homeLive) : { unavailable: homeStatus.unavailable },
+        awayTeamLiveStats: awayStatus.available ? (compact ? pickSummary(awayLive) : awayLive) : { unavailable: awayStatus.unavailable },
         stats: data
       };
     });
@@ -162,6 +190,7 @@ export function createMatchAnalyticsTools(call) {
 
   // MAT-R12 / MAT-R29 / MAT-R09: 比赛动量趋势与教练席实时事件时间线
   async function momentumAndDugout() {
+    const startedAtMs = Date.now();
     const state = await requireInMatch();
     const idMap = await getPropertyMap();
     return client.scope(async scope => {
@@ -175,23 +204,27 @@ export function createMatchAnalyticsTools(call) {
       const data = await readMatchProps(scope, [
         "MatchMomentum", "MatchDugoutEventCount", "MatchDugoutTimelineEvents", "GoalscorersString"
       ], contexts, idMap);
-      return { ok: true, readOnly: true, minute: state.minute, continueState: state.continueState, data };
+      const timing = await buildSamplingWindow(state, startedAtMs);
+      return { ok: true, readOnly: true, minute: state.minute, continueState: state.continueState, ...timing, data };
     });
   }
 
   // MAT-R19 / MAT-R20 / MAT-R21: 双方传球分布图、传球网络起止坐标及攻防区域分布
   async function passingNetwork() {
+    const startedAtMs = Date.now();
     const state = await requireInMatch();
     const idMap = await getPropertyMap();
     return client.scope(async scope => {
       const contexts = { human: { source: "human" }, Human: { source: "human" }, match: { source: "match" } };
       const data = await readMatchProps(scope, ["HomePassMap", "AwayPassMap", "ActionZonesVisualisation"], contexts, idMap);
-      return { ok: true, readOnly: true, minute: state.minute, continueState: state.continueState, passing: data };
+      const timing = await buildSamplingWindow(state, startedAtMs);
+      return { ok: true, readOnly: true, minute: state.minute, continueState: state.continueState, ...timing, passing: data };
     });
   }
 
-  // MAT-R13 / MAT-R14 / MAT-R19 / MAT-R25 / MAT-R26: 双方球员比赛评分与完整个人实时统计（默认 both 同时返回主客队）
+  // MAT-R13 / MAT-R14 / MAT-R19 / MAT-R25 / MAT-R26 (Review #44/#53): 球员实时统计，未就绪侧显式标记 available:false（不再误报 0 名球员）
   async function playerLiveStats({ side = "both", limit = 15, compact = true } = {}) {
+    const startedAtMs = Date.now();
     const state = await requireInMatch();
     const idMap = await getPropertyMap();
     const sides = side === "both" ? ["home", "away"] : [side === "away" ? "away" : "home"];
@@ -216,15 +249,25 @@ export function createMatchAnalyticsTools(call) {
     const statFields = compact ? compactStatFields : fullStatFields;
 
     const result = {};
+    let degraded = false;
     for (const s of sides) {
       const isHome = s === "home";
       result[s] = await client.scope(async scope => {
         const team = await scope.subscribeOptional("human", "Team", {}, 800);
         const teamCtx = team.handle ? { source: team.handle } : { source: "human", path: "Team" };
         const listSub = await scope.subscribeOptional("match", "PlayerMatchStats", { isHomeTeam: isHome, IsHomeTeam: isHome }, 1500);
-        const items = listSub.read?.value?.items || [];
-        const totalCount = items.length;
-        const count = Math.min(totalCount, Math.max(1, Number(limit) || 15));
+        if (!listSub.handle || listSub.read?.value?.kind !== "list") {
+          degraded = true;
+          return {
+            available: false,
+            unavailable: listSub.unavailable || "player_match_stats_not_ready",
+            count: null,
+            players: []
+          };
+        }
+        const items = listSub.read.value.items || [];
+        const totalCount = listSub.read.value.count ?? items.length;
+        const count = Math.min(items.length, Math.max(1, Number(limit) || 15));
         const players = [];
 
         for (let i = 0; i < count; i++) {
@@ -252,19 +295,33 @@ export function createMatchAnalyticsTools(call) {
           }
           players.push(playerRow);
         }
-        return { count: totalCount, players };
+        return { available: true, count: totalCount, returnedCount: players.length, players };
       });
     }
-    return { ok: true, readOnly: true, compact: Boolean(compact), minute: state.minute, continueState: state.continueState, sides: result };
+    const timing = await buildSamplingWindow(state, startedAtMs);
+    return {
+      ok: true,
+      readOnly: true,
+      degraded,
+      compact: Boolean(compact),
+      minute: state.minute,
+      continueState: state.continueState,
+      ...timing,
+      sides: result
+    };
   }
 
   // MAT-R22: 指定球员热区图数据
   async function playerHeatMap({ side = "home", playerIndex = 0 } = {}) {
+    const startedAtMs = Date.now();
     const state = await requireInMatch();
     const idMap = await getPropertyMap();
     const isHome = side !== "away";
     return client.scope(async scope => {
       const listSub = await scope.subscribeOptional("match", "PlayerMatchStats", { isHomeTeam: isHome }, 1500);
+      if (!listSub.handle || listSub.read?.value?.kind !== "list") {
+        throw new Error(`PlayerMatchStats（${isHome ? "home" : "away"}）通道暂未就绪：${listSub.unavailable || "no_handle"}`);
+      }
       const items = listSub.read?.value?.items || [];
       if (playerIndex < 0 || playerIndex >= items.length) {
         throw new Error(`球员索引越界: ${playerIndex} (共有 ${items.length} 名球员)`);
@@ -279,10 +336,12 @@ export function createMatchAnalyticsTools(call) {
         PossessionMode: 0,
         human: { source: "human" },
       }, 1200);
+      const timing = await buildSamplingWindow(state, startedAtMs);
       return {
         ok: true,
         readOnly: true,
         minute: state.minute,
+        ...timing,
         side: isHome ? "home" : "away",
         playerIndex,
         playerName: stripFmTags(scalar(nameSub.read?.value)) || null,

@@ -35,8 +35,28 @@ export function createClubOverviewTools(call) {
     });
   }
 
+  // 统计本轮属性读取覆盖率（Review #42：全缺失时不再固定返回 liveVerified: true）
+  function summarizeCoverage(valuesObj) {
+    const entries = Object.entries(valuesObj || {});
+    const unavailableFields = [];
+    for (const [k, v] of entries) {
+      if (v === null || v === undefined || (typeof v === "object" && (v.unavailable || v.error))) {
+        unavailableFields.push(k);
+      }
+    }
+    const totalFields = entries.length;
+    const availableFields = totalFields - unavailableFields.length;
+    return {
+      totalFields,
+      availableFields,
+      unavailableCount: unavailableFields.length,
+      unavailableFields,
+      complete: totalFields > 0 && unavailableFields.length === 0
+    };
+  }
+
   return {
-    // CLB-R04 / CLB-R13: 财务余额、债务、未来预测与阵容成本/工资帽读取
+    // CLB-R04 / CLB-R13 (Review #42): 财务余额、债务、未来预测与阵容成本/工资帽读取；显式报告本次读取覆盖率
     finances: () => withClubAndTeam(async (scope, club, team, contexts) => {
       const values = await readProperties(scope, club.handle, [
         "NetDebt", "TransferDebt", "ProjectionBalance", "ProjectionExpenditure",
@@ -45,8 +65,13 @@ export function createClubOverviewTools(call) {
         "SalaryCapAllowedString", "SalaryCapTakenUpPercentage", "YearlySalaryCapRatioString"
       ], contexts);
       const teamCap = await readProperties(scope, team.handle, ["HasSalaryCap", "RosterSalaryCapData"], contexts);
+      const readCoverage = summarizeCoverage({ ...values, ...teamCap });
       return {
         ok: true,
+        readOnly: true,
+        scope: "club_finances_projection",
+        degraded: !readCoverage.complete,
+        readCoverage,
         clubIdentity: club.read.value?.identity ?? null,
         netDebt: scalar(values.NetDebt),
         transferDebt: scalar(values.TransferDebt),
@@ -66,7 +91,8 @@ export function createClubOverviewTools(call) {
           yearlyRatio: scalar(values.YearlySalaryCapRatioString),
           rosterSalaryCapData: teamCap.RosterSalaryCapData
         },
-        liveVerified: true
+        note: "此接口返回财政预测与债务；查询当前已生效的转会/工资预算余额请调 get_club_budget_balances，调整预算滑杆草稿请调 get_budget_allocation。",
+        liveVerified: readCoverage.availableFields > 0
       };
     }),
 
@@ -78,8 +104,12 @@ export function createClubOverviewTools(call) {
         "DaysUntilYouthIntake", "YouthIntakeRating", "YouthCandidatesCount",
         "YouthIntakeFeedbackString", "AllYouthCandidates"
       ], contexts);
+      const readCoverage = summarizeCoverage(values);
       return {
         ok: true,
+        readOnly: true,
+        degraded: !readCoverage.complete,
+        readCoverage,
         clubIdentity: club.read.value?.identity ?? null,
         facilities: {
           training: values.TrainingFacilityRating,
@@ -96,7 +126,7 @@ export function createClubOverviewTools(call) {
           candidatesCount: scalar(values.YouthCandidatesCount),
           candidates: values.AllYouthCandidates
         },
-        liveVerified: true
+        liveVerified: readCoverage.availableFields > 0
       };
     }),
 
@@ -107,8 +137,12 @@ export function createClubOverviewTools(call) {
         "ManagerialSupportFeedback", "SupporterBoardInfluenceString",
         "BoardCulture", "SupporterCulture"
       ], contexts);
+      const readCoverage = summarizeCoverage(values);
       return {
         ok: true,
+        readOnly: true,
+        degraded: !readCoverage.complete,
+        readCoverage,
         clubIdentity: club.read.value?.identity ?? null,
         supportLevel: {
           currentMonth: scalar(values.CurrentMonthManagerSupportLevel),
@@ -118,7 +152,7 @@ export function createClubOverviewTools(call) {
         boardCulture: clean(scalar(values.BoardCulture)),
         supporterCulture: clean(scalar(values.SupporterCulture)),
         managerialSupportFeedback: values.ManagerialSupportFeedback,
-        liveVerified: true
+        liveVerified: readCoverage.availableFields > 0
       };
     }),
 
@@ -128,10 +162,14 @@ export function createClubOverviewTools(call) {
         "YearFounded", "BackgroundShort", "HistoryHonours", "Legends", "Icons",
         "AffiliatedClubsCount", "StaffVacancies"
       ], contexts);
+      const readCoverage = summarizeCoverage(values);
       const affiliatedClubs = await scope.resolveRefList(club.handle, "AffiliatedClubsList", contexts, 15);
       const youthTeams = await scope.resolveRefList(club.handle, "YouthTeams", contexts, 10);
       return {
         ok: true,
+        readOnly: true,
+        degraded: !readCoverage.complete,
+        readCoverage,
         clubIdentity: club.read.value?.identity ?? null,
         yearFounded: scalar(values.YearFounded),
         background: clean(scalar(values.BackgroundShort)),
@@ -142,7 +180,7 @@ export function createClubOverviewTools(call) {
         affiliatedClubs,
         youthTeams,
         staffVacancies: scalar(values.StaffVacancies),
-        liveVerified: true
+        liveVerified: readCoverage.availableFields > 0
       };
     }),
 
@@ -154,6 +192,7 @@ export function createClubOverviewTools(call) {
         "MatchCohesionFeedback", "SocialGroupList",
         "HierarchyTeamLeaders", "HierarchyHighlyInfluential", "HierarchyInfluential"
       ], contexts);
+      const readCoverage = summarizeCoverage(values);
 
       // 建立一线队 identity -> 姓名 映射，避免仅返回晦涩的 identity 字符串
       const nameByIdentity = new Map();
@@ -187,6 +226,9 @@ export function createClubOverviewTools(call) {
 
       return {
         ok: true,
+        readOnly: true,
+        degraded: !readCoverage.complete,
+        readCoverage,
         teamIdentity: team.read.value?.identity ?? null,
         hierarchy: {
           teamLeadersCount: scalar(values.HierarchyTeamLeadersCount),
@@ -199,7 +241,7 @@ export function createClubOverviewTools(call) {
         socialGroups: enrichNode(values.SocialGroupList),
         socialGroupFeedback: clean(scalar(values.SocialGroupFeedbackString)) || values.SocialGroupFeedbackString,
         matchCohesionFeedback: clean(scalar(values.MatchCohesionFeedback)) || values.MatchCohesionFeedback,
-        liveVerified: true
+        liveVerified: readCoverage.availableFields > 0
       };
     })
   };

@@ -10,7 +10,7 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
 ## 怎么开始（四步法，省上下文不迷路）
 
 为了不让几百个工具说明塞满你的脑子，网关默认只给你 **4 个核心工具**：
-1. **`plugin_health`**：先用它打个招呼，确认游戏开着、存档已经读进去了。如果连不上，立刻去读 [install.md](references/install.md) 手把手带玩家装好。
+1. **`plugin_health`**：先用它确认四层状态——插件服务在线、鉴权成功、当前存档是否已加载（`diagnostics.saveLoaded`），以及经理是否已入职（失业/待业经理仍可使用 `search_players`、`list_shortlists`、`get_shortlist_players` 和工作中心求职工具）。如果连不上，立刻去读 [install.md](references/install.md) 手把手带玩家装好。
 2. **按话题翻对应小抄**（不要一次全读！问什么翻什么）：
    - **标准化运营工作流 SOP（赛前/复盘/转会窗/时间推进闭环）** -> [workflows.md](references/workflows.md)
    - **通用主教练经营与比赛诊断（看人/数据复盘/青训/更衣室/引援）** -> [pro-manager-playbook.md](references/pro-manager-playbook.md)
@@ -34,24 +34,24 @@ description: Football Manager 27 实时 AI 助教插件。通过游戏内原生�
 不知道玩家要你干嘛时，对照下面直接找工具（**用 `fm_call` 调用**）：
 - **“看看我们队现在什么情况 / 谁累了 / 谁合同快到期了 / 有哪些球员”**
   -> 直接调 `get_squad_snapshot`！一行一个球员，20 多人一次看全；想看某人详细技术/精神/身体属性调 `get_player_attributes`。
-- **“帮我比比这俩球员谁更好”**
-  -> 调 `compare_players({ playerIndices: [0, 1] })`（先从 `get_squad_snapshot` 查出对应人的 `index`）。
+- **“帮我比比这俩球员谁更好（含队外引援目标）”**
+  -> 调 `compare_players({ playerIndices: [0, 1] })` 或用 `targets` 混合比较本队 `squadIndex` 与外部 `{ playerName, club }` / `{ source, path }`（含核心属性区间与持球/无球最佳角色）。
 - **“我们现在排第几 / 联赛积分榜和接下来赛程是什么”**
   -> 调 `get_league_table_and_fixtures`。
 - **“看看球队士气、更衣室大佬是谁、有没有闹情绪的”**
   -> 调 `get_squad_dynamics_and_hierarchy` + `get_squad_happiness_issues`。
-- **“下场打谁 / 对手有什么弱点 / 怎么调整战术 / 一键换预设风格”**
-  -> 先调 `get_pre_match_briefing`（仅 ~500B 极省 Token，一次看全联赛名次、下场对手、当前心态、未读消息与体能/士气预警）；想一键切换官方预设风格（控制球权/高位压迫/密集短传/快速防反/摆大巴等）直接调 `set_tactical_style`（不传参数可看全部风格与本队推荐 TOP3）；再按需调 `get_opposition_scout_report` 与 `get_opposition_instructions`（含对手姓名与球衣号）。
+- **“下场打谁 / 对手有什么弱点 / 怎么调整战术 / 换预设风格”**
+  -> 先调 `get_pre_match_briefing`（汇总联赛名次、下场对手、当前心态、未读消息与全队体能/锐度/士气预警）；想切换官方预设风格先调 `set_tactical_style({ previewOnly: true })` 查看精确 ID、完整标签与 `slotToken`，确认后再传精确 ID 或完整标签（切换预设可能重设球队指令）；再按需调 `get_opposition_scout_report` 与 `get_opposition_instructions`。
 - **“今天收件箱有啥事 / 帮我过一天”**
-  -> 调 `get_inbox`，纯通知可直接一键调 `mark_all_messages_read({})`（无需先预览 token），想过天调 `fm_continue_game({ action: "continue" })`（若遇 `processing_card_timer_active` 等待 2 秒再读即可）。
+  -> 先调 `fm_continue_game({ action: "read" })` 看阻塞原因与 `managerTask.messageIdentity`，再用 `get_inbox({ unreadOnly: false, pendingOnly: true })` 结合 `nextScanFrom` 翻完各页核查待办；仅对已检查确认的纯通知单封标读（`set_news_read_state`），**切勿只扫首页就调用 `mark_all_messages_read({})`**（整箱标读仅在玩家明确要求或已核对完全部页无待办时使用）。推进时间调 `fm_continue_game({ action: "continue" })`（若遇 `processing_card_timer_active` 等待 2 秒再读即可）。
 - **“俱乐部老板对我们有啥要求 / 还有多少钱买人”**
-  -> 调 `get_club_history_and_overview` + `get_club_vision_draft` + `get_budget_allocation`（别去用 `get_club_panel_state` 盲猜属性名）。
+  -> 调 `get_club_history_and_overview` + `get_club_vision_draft` + `get_club_budget_balances`（查已生效余额）+ `get_club_finances_projection`（查债务与预测）；需要滑动调整转会/工资比例草稿时再调 `get_budget_allocation`（别把滑杆草稿或总工资预算当成剩余工资空间）。
 - **“刚踢完这场比赛踢得怎么样 / 赛中数据咋样”**
-  -> 比赛中调 `get_match_live_report` / `get_match_team_stats_and_xg`；踢完了看 `get_past_match_report`。
+  -> 比赛中调 `get_match_live_report` / `get_match_team_stats_and_xg`（注意核对 `samplingWindow` 与 `sideAvailability`）；踢完了看 `get_past_match_report`（核对 `fixtureIdentity` 与 `fixtureMetadata`）。
 - **“帮我安排下周训练 / 哪些人该休息”**
   -> 调 `get_team_training_schedules` 看训练表，`set_team_training_intensity` 调强度/自动休息；结合 `get_squad_snapshot` 看体能。
-- **“帮我排最佳首发、体检阵容深度和合同风险、选队长、分球衣号码”**
-  -> 一键算最佳 11 人首发与替补席直接调 `optimize_best_xi`（确定性匈牙利算法，零心算误差）；一键查位置缺口/冗员/体能与高薪老将调 `audit_squad_and_contracts`；落地换首发调 `get_lineup_options`，选队长调 `get_captain_options` / `set_captain`，分号码调 `get_squad_number_options` / `change_squad_numbers`。
+- **“帮我排最佳首发、体检阵容深度和合同到期风险、选队长、分球衣号码”**
+  -> 排最佳 11 人首发与替补席调 `optimize_best_xi`（精确匈牙利匹配，自动分页读全队并同日复用体检快照；密集赛程严格轮休请传 `strictMinCondition: true`）；查位置缺口/冗员/合同到期优先队列（`expiringContractsQueue`）与高薪老将调 `audit_squad_and_contracts`（注：算法计算极快，首次全队实时订阅读取通常需 20–30 秒，同日连续调体检+排阵会自动复用快照）；落地换首发调 `get_lineup_options({ selectionIndex })` + `pick_lineup_player`，选队长调 `get_captain_options` / `set_captain`，分号码调 `get_squad_number_options` / `set_player_squad_number` / `change_squad_numbers`。
 - **“我想买人/租借/续约/按条件搜自由球员或免签目标”**
   -> 按多条件（位置/年龄/国籍/俱乐部/仅自由球员/身高）搜数据库球员直接调 `search_players`；看球探与候选调 `get_scouting_knowledge_and_reports`、`list_shortlists`；谈判与报价流程先翻 [recruitment.md](references/recruitment.md)（条款确认后可直接用 `get_negotiation_actions` + `execute_negotiation_action` 提交）。
 - **“业务工具没覆盖的冷门字段（如租借工资分担、合同条款细节、某面板原生属性）”**

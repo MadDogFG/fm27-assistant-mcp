@@ -1,20 +1,10 @@
 import { createLiveClient, clean, scalar } from "./live-client.mjs";
+import { createPropertyRegistryCache } from "./core/property-registry.mjs";
 
-// 对手报告正文与元数据只读工具组（TAC-R20 / TAC-R21）
+// 对手报告正文与元数据只读工具组（TAC-R20 / TAC-R21，Review #24/#46）
 export function createOppositionReportTools(call) {
   const client = createLiveClient(call);
-  let cachedIdMap = null;
-
-  async function getPropertyMap() {
-    if (cachedIdMap) return cachedIdMap;
-    try {
-      const reg = await call("/api/v1/internal/registry?kind=properties");
-      cachedIdMap = new Map((reg?.items || []).map(x => [x.id, x.name]));
-    } catch {
-      cachedIdMap = new Map();
-    }
-    return cachedIdMap;
-  }
+  const { getPropertyMap } = createPropertyRegistryCache(call);
 
   const stripTags = text => clean(text).replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").trim();
 
@@ -60,10 +50,40 @@ export function createOppositionReportTools(call) {
       const clubSub = await scope.subscribe("human", "Club");
       const clubAnalysts = await scope.subscribeOptional({ source: clubSub.handle }, "Analysts", ctx, 1000);
 
+      // Review #24: 读取下场比赛赛程、日期、赛事身份以绑定对手报告上下文，解决同名对手/连续两场不同赛事辨识问题
+      const [nextFixSub, next5Sub, gameDateR] = await Promise.all([
+        scope.subscribeOptional({ source: team.handle }, "NextFixture", ctx, 1000),
+        scope.subscribeOptional({ source: team.handle }, "Next5Fixtures", ctx, 900),
+        scope.readAndRelease("game", "CurrentGameDate", {}, 500)
+      ]);
+      let nextFixtureBinding = {
+        fixtureIdentity: nextFixSub.read?.value?.identity || null,
+        matchDate: null,
+        competitionName: null,
+        inDays: null,
+        gameDateObserved: gameDateR.scalar || null,
+        status: nextFixSub.handle ? "bound" : "unavailable"
+      };
+      if (nextFixSub.handle) {
+        const [fDateR, fCompSub] = await Promise.all([
+          scope.readAndRelease(nextFixSub.handle, "DateString", ctx, 500),
+          scope.subscribeOptional(nextFixSub.handle, "Competition", ctx, 500)
+        ]);
+        nextFixtureBinding.matchDate = fDateR.scalar || null;
+        if (fCompSub.handle) {
+          nextFixtureBinding.competitionName = await scope.resolveRefName(fCompSub.handle, ctx, 400).catch(() => null);
+        }
+      }
+      if (next5Sub.handle && Array.isArray(next5Sub.read?.value?.items) && next5Sub.read.value.items.length > 0) {
+        const firstFields = next5Sub.read.value.items[0]?.fields || {};
+        nextFixtureBinding.inDays = stripTags(scalar(firstFields["0x71764a36"]) || "") || null;
+      }
+
       const items = reportsSub.read?.value?.items || [];
       const count = Math.min(items.length, Math.max(1, Number(maxTeams) || 3));
       const scoutedTeams = [];
       let nextOpponentRef = null;
+      let nextOpponentIdentity = null;
       for (let i = 0; i < count; i++) {
         const oppRef = { source: reportsSub.handle, path: String(i) };
         const nameSub = await scope.subscribeOptional(oppRef, "Name", ctx, 1000);
@@ -71,7 +91,10 @@ export function createOppositionReportTools(call) {
         const formSub = await scope.subscribeOptional(oppRef, "PreferredFormationString", ctx, 1000);
         const isNextSub = await scope.subscribeOptional(oppRef, "IsContextTeamNextOpponent", ctx, 800);
         const isNext = scalar(isNextSub.read?.value);
-        if (String(isNext).toLowerCase() === "true" && !nextOpponentRef) nextOpponentRef = oppRef;
+        if (String(isNext).toLowerCase() === "true" && !nextOpponentRef) {
+          nextOpponentRef = oppRef;
+          nextOpponentIdentity = items[i]?.identity || null;
+        }
         scoutedTeams.push({
           index: i,
           identity: items[i]?.identity || null,
@@ -82,29 +105,41 @@ export function createOppositionReportTools(call) {
         });
       }
 
-      // 若已侦察列表里未直接标出下一对手，回退从当前战术的 NextOppositionInstructionsTeam 获取下一对手引用
       if (!nextOpponentRef) {
         const tacticSub = await scope.subscribeOptional(team.handle, "Tactic", { ...ctx, Boolean: true }, 1000);
         if (tacticSub.handle) {
           const nextTeamSub = await scope.subscribeOptional(tacticSub.handle, "NextOppositionInstructionsTeam", ctx, 1000);
           if (nextTeamSub.handle && nextTeamSub.read?.value?.kind === "reference") {
             nextOpponentRef = { source: nextTeamSub.handle };
+            nextOpponentIdentity = nextTeamSub.read.value.identity || null;
           }
         }
       }
 
-      // 读取真正“下一对手”自身的优缺点与偏好阵型（避免把己方球队的 ScoutReportStrengths 当成对手）
       let nextOpponentAnalysis = null;
       if (nextOpponentRef) {
-        const oppName = await scope.readAndRelease(nextOpponentRef, "Name", ctx, 700);
-        const oppForm = await scope.readAndRelease(nextOpponentRef, "PreferredFormationString", ctx, 700);
-        const oppStr = await scope.subscribeOptional(nextOpponentRef, "ScoutReportStrengths", ctx, 1000);
-        const oppWeak = await scope.subscribeOptional(nextOpponentRef, "ScoutReportWeaknesses", ctx, 1000);
+        const [oppName, oppForm, oppStr, oppWeak, oppDateR, oppKnowR] = await Promise.all([
+          scope.readAndRelease(nextOpponentRef, "Name", ctx, 700),
+          scope.readAndRelease(nextOpponentRef, "PreferredFormationString", ctx, 700),
+          scope.subscribeOptional(nextOpponentRef, "ScoutReportStrengths", ctx, 1000),
+          scope.subscribeOptional(nextOpponentRef, "ScoutReportWeaknesses", ctx, 1000),
+          scope.readAndRelease(nextOpponentRef, "ScoutReportDate", ctx, 500),
+          scope.readAndRelease(nextOpponentRef, "ScoutingKnowledgeLevel", ctx, 500)
+        ]);
         nextOpponentAnalysis = {
+          opponentIdentity: nextOpponentIdentity,
           name: stripTags(oppName.scalar || "") || null,
           preferredFormation: stripTags(oppForm.scalar || "") || null,
-          strengths: oppStr.handle ? decodeValue(oppStr.read?.value, idMap) : null,
-          weaknesses: oppWeak.handle ? decodeValue(oppWeak.read?.value, idMap) : null,
+          fixtureBinding: nextFixtureBinding,
+          reportFreshness: {
+            reportDate: oppDateR.ok ? (oppDateR.scalar || null) : null,
+            reportDateStatus: oppDateR.ok && oppDateR.scalar ? "known" : "unknown_not_exposed_by_host",
+            knowledgeCoverage: oppKnowR.ok ? (oppKnowR.scalar || null) : null,
+            knowledgeStatus: oppKnowR.ok && oppKnowR.scalar ? "known" : "unknown_not_exposed_by_host",
+            analystAssigned: analystName || null
+          },
+          strengths: oppStr.handle ? decodeValue(oppStr.read?.value, idMap) : { unavailable: oppStr.unavailable || "no_handle" },
+          weaknesses: oppWeak.handle ? decodeValue(oppWeak.read?.value, idMap) : { unavailable: oppWeak.unavailable || "no_handle" },
         };
       }
 
@@ -113,6 +148,8 @@ export function createOppositionReportTools(call) {
         readOnly: true,
         metadata: {
           source: "team_native_scouting_reports",
+          gameDateObserved: gameDateR.scalar || null,
+          nextFixtureBinding,
           scoutedTeamsCount: items.length,
           hasNextOppositionThreatAssessment: Boolean(threatSub.handle),
           strengthsCount: strengthsSub.read?.value?.count ?? 0,

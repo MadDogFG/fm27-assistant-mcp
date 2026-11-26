@@ -61,20 +61,28 @@ export function createManagerCareerTools(call) {
     });
   }
 
-  // MGR-O23a/c: 关注球队或关注赛事/新闻来源
-  async function manageNewsFollow({ targetType = "club", targetIndex = 0, follow = true, operationId } = {}) {
+  // MGR-O23a/c: 关注球队或关注赛事/新闻来源（Review #21：未恢复区分关注/取消关注与目标类型的原生协议，阻断无区分派发）
+  async function manageNewsFollow({ targetType, targetIndex, follow, operationId } = {}) {
     if (!["club", "competition", "media_source"].includes(targetType)) {
-      throw new Error(`未知关注目标类型: ${targetType}（支持 club/competition/media_source）`);
+      throw new Error(`必须指定关注目标类型 targetType（支持 club/competition/media_source）。当前: ${targetType}`);
     }
     if (!Number.isInteger(targetIndex) || targetIndex < 0) {
       throw new Error("targetIndex 必须为非负整数。");
     }
-    const id = operationId || `follow_${targetType}_${Date.now()}`;
-    const dispatch = await call(
-      `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=EventFmxSpeakToQuickActionComplete&source=human&apply=true`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(targetIndex) }
-    );
-    return { ok: true, operationId: id, targetType, targetIndex, follow: Boolean(follow), dispatch };
+    if (typeof follow !== "boolean") {
+      throw new Error("必须明确传入布尔意图 follow（true=关注 / false=取消关注）。");
+    }
+    return {
+      ok: false,
+      blocked: true,
+      unsupportedBranch: true,
+      operationId: operationId || null,
+      targetType,
+      targetIndex,
+      follow,
+      reason: "当前版本尚未恢复区分关注/取消关注以及球队/赛事/媒体来源的原生协议（原 EventFmxSpeakToQuickActionComplete 仅接收裸索引），已拒绝发送无区分事件。",
+      zeroDispatches: true
+    };
   }
 
   return { getManagerCareerStatus, manageManagerCareer, manageNewsFollow };

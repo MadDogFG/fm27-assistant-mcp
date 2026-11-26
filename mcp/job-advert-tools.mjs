@@ -1,20 +1,10 @@
 import { createLiveClient, clean } from "./live-client.mjs";
+import { createPropertyRegistryCache } from "./core/property-registry.mjs";
 
 // 俱乐部职员招聘广告只读与撤销管理工具组（CLB-O13b）
 export function createJobAdvertTools(call) {
   const client = createLiveClient(call);
-  let cachedIdMap = null;
-
-  async function getPropertyMap() {
-    if (cachedIdMap) return cachedIdMap;
-    try {
-      const reg = await call("/api/v1/internal/registry?kind=properties");
-      cachedIdMap = new Map((reg?.items || []).map(x => [x.id, x.name]));
-    } catch {
-      cachedIdMap = new Map();
-    }
-    return cachedIdMap;
-  }
+  const { getPropertyMap } = createPropertyRegistryCache(call);
 
   const stripTags = text => clean(text).replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").trim();
 

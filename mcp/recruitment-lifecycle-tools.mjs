@@ -106,57 +106,158 @@ export function createRecruitmentLifecycleTools(call) {
         };
       });
     },
-    // REC-O08c: 球探中心报告处理与请求更新（读取选项、确认已阅、继续考察/请求更新报告）
-    scoutingCentreReport: async ({ action = "read", durationDays, operationId } = {}) => {
+    // REC-O08c (Review #35): 球探中心报告读取与严格按报告身份及独立动作通道处理
+    scoutingCentreReport: async ({ action = "read", reportIndex, expectedReportIdentity, durationDays, operationId } = {}) => {
       if (!["read", "acknowledge", "request_update", "keep_scouting"].includes(action)) {
         throw new Error(`未知球探报告动作: ${action}（支持 read/acknowledge/request_update/keep_scouting）`);
+      }
+      if (reportIndex !== undefined && (!Number.isInteger(reportIndex) || reportIndex < 0)) {
+        throw new Error("reportIndex 必须为非负整数。");
       }
       return client.scope(async scope => {
         const team = await scope.subscribe("human", "Team");
         const ctx = { human: { source: "human" }, Human: { source: "human" }, team: { source: team.handle }, Team: { source: team.handle } };
         const sca = await scope.subscribe("human", "ScoutingCentreActions", ctx);
-        const [items, keepAct, scoutAct, counts] = await Promise.all([
+        const [itemsSub, keepAct, scoutAct, counts] = await Promise.all([
           scope.subscribeOptional(sca.handle, "Items", ctx, 1000),
           scope.subscribeOptional(sca.handle, "KeepScoutingAction", ctx, 1000),
           scope.subscribeOptional(sca.handle, "ScoutPlayerAction", ctx, 1000),
           scope.subscribeOptional(sca.handle, "ScoutingCentreCounts", ctx, 1000)
         ]);
+        const rawItems = itemsSub.read?.value?.items || [];
+        const reportSummaries = rawItems.map((it, idx) => ({
+          index: idx,
+          identity: it?.identity || it?.fields?.["0x69642020"]?.value || null,
+          type: it?.type || null
+        }));
         if (action === "read") {
           return {
             ok: true,
             readOnly: true,
-            items: items.read?.value ?? null,
+            reportCount: itemsSub.read?.value?.count ?? rawItems.length,
+            reports: reportSummaries,
+            items: itemsSub.read?.value ?? null,
             counts: counts.read?.value ?? null,
             keepScoutingDefault: keepAct.read?.value ?? null,
             scoutPlayerDefault: scoutAct.read?.value ?? null
           };
         }
+
+        // 写操作必须唯一绑定具体报告（多份报告时不可省略 reportIndex / expectedReportIdentity）
+        const totalReports = itemsSub.read?.value?.count ?? rawItems.length;
+        if (totalReports === 0) {
+          return { ok: false, blocked: true, reason: "球探中心当前没有待处理报告，已拒绝派发。", zeroDispatches: true };
+        }
+        let targetIdx = reportIndex;
+        if (expectedReportIdentity) {
+          const byId = reportSummaries.findIndex(r => r.identity === expectedReportIdentity);
+          if (byId < 0) {
+            return {
+              ok: false,
+              blocked: true,
+              reason: `球探中心报告列表已变化，未找到身份为 "${expectedReportIdentity}" 的报告，已拒绝派发。`,
+              expectedReportIdentity,
+              reports: reportSummaries,
+              zeroDispatches: true
+            };
+          }
+          if (targetIdx !== undefined && targetIdx !== byId) {
+            return {
+              ok: false,
+              blocked: true,
+              reason: `reportIndex=${targetIdx} 与 expectedReportIdentity 实际所在位置(${byId})不匹配，已拒绝派发。`,
+              zeroDispatches: true
+            };
+          }
+          targetIdx = byId;
+        } else if (totalReports > 1 && targetIdx === undefined) {
+          return {
+            ok: false,
+            blocked: true,
+            reason: `当前球探中心存在 ${totalReports} 份报告，必须指定 reportIndex 或 expectedReportIdentity 才能操作，已拒绝盲写。`,
+            reports: reportSummaries,
+            zeroDispatches: true
+          };
+        } else if (targetIdx === undefined) {
+          targetIdx = 0;
+        }
+        if (targetIdx < 0 || targetIdx >= totalReports) {
+          throw new Error(`reportIndex 越界: ${targetIdx} >= ${totalReports}`);
+        }
+        const matchedReport = reportSummaries[targetIdx] || { index: targetIdx, identity: null };
         const id = operationId || `scouting_centre_${action}_${Date.now()}`;
+
         if (action === "acknowledge") {
+          if (totalReports > 1 && !expectedReportIdentity) {
+            return {
+              ok: false,
+              blocked: true,
+              reason: "多份球探报告并存时，原生 EventFmxScoutingCentreAcknowledge(null) 无法保证仅确认单份报告，请提供 expectedReportIdentity 或使用单人菜单。",
+              reports: reportSummaries,
+              zeroDispatches: true
+            };
+          }
           const send = await call(
             `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=EventFmxScoutingCentreAcknowledge&source=${encodeURIComponent(sca.handle)}&apply=true`,
             { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(null) }
           );
-          return { ok: true, operationId: id, action, eventName: "EventFmxScoutingCentreAcknowledge", dispatch: send };
+          return { ok: true, status: "dispatched_unverified", operationId: id, action, targetReport: matchedReport, eventName: "EventFmxScoutingCentreAcknowledge", dispatch: send };
         }
-        // request_update 或 keep_scouting：可选更新 ScoutPlayerAction / KeepScoutingAction 后派发响应事件
-        if (durationDays !== undefined) {
-          const targetProp = action === "keep_scouting" ? keepAct : scoutAct;
-          if (targetProp.handle) {
-            await call(
-              `/api/v1/internal/update?handle=${encodeURIComponent(targetProp.handle)}&apply=true`,
-              { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(durationDays) }
-            );
-          }
+
+        // request_update vs keep_scouting 必须走各自独立通道并显式提供 durationDays，严禁两者在省略参数时发出完全相同的 (sca, 7)
+        const targetProp = action === "keep_scouting" ? keepAct : scoutAct;
+        const propName = action === "keep_scouting" ? "KeepScoutingAction" : "ScoutPlayerAction";
+        if (!Number.isInteger(durationDays) || durationDays < 1) {
+          return {
+            ok: false,
+            blocked: true,
+            reason: `执行 ${action} 必须明确指定正整数 durationDays，禁止省略参数回退为无区分默认值。`,
+            targetReport: matchedReport,
+            zeroDispatches: true
+          };
         }
+        if (!targetProp.handle) {
+          return {
+            ok: false,
+            blocked: true,
+            reason: `球探中心当前未暴露 ${propName} 动作通道，无法将 "${action}" 与另一动作区分送入游戏，已拒绝派发；请改用 get_player_actions + execute_player_action 对具体球员发起球探指令。`,
+            targetReport: matchedReport,
+            zeroDispatches: true
+          };
+        }
+        if (totalReports > 1 && !matchedReport.identity) {
+          return {
+            ok: false,
+            blocked: true,
+            reason: "多份报告存在且无法确认目标报告稳定身份，已拒绝向球探中心广播响应事件；请对目标球员使用 get_player_actions + execute_player_action。",
+            reports: reportSummaries,
+            zeroDispatches: true
+          };
+        }
+        const upd = await call(
+          `/api/v1/internal/update?handle=${encodeURIComponent(targetProp.handle)}&apply=true`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(durationDays) }
+        );
         const send = await call(
           `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=EventFmxScoutingCentreResponse&source=${encodeURIComponent(sca.handle)}&apply=true`,
-          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(durationDays ?? 7) }
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ $value: { source: targetProp.handle } }) }
         );
-        return { ok: true, operationId: id, action, durationDays: durationDays ?? 7, eventName: "EventFmxScoutingCentreResponse", dispatch: send };
+        return {
+          ok: true,
+          status: "dispatched_unverified",
+          operationId: id,
+          action,
+          actionChannel: propName,
+          targetReport: matchedReport,
+          durationDays,
+          eventName: "EventFmxScoutingCentreResponse",
+          update: upd,
+          dispatch: send
+        };
       });
     },
-    // REC-O06b/c / REC-O07a / REC-O31: 读取可考察赛事与地区树、调整球探覆盖范围与任务人员/频率
+    // REC-O06b/c / REC-O07a / REC-O31 (Review #36): 读取可考察赛事与地区树、球探覆盖范围与短名单更新周期；
+    // set_interval 仅接受原生合法选项列表中唯一匹配的选项值，非法/缺失/重复/通道未就绪一律零写入
     scoutingAssignment: async ({ action = "read", rangeValue, intervalValue, operationId } = {}) => {
       if (!["read", "set_range", "confirm_staff", "set_interval"].includes(action)) {
         throw new Error(`未知球探任务动作: ${action}（支持 read/set_range/confirm_staff/set_interval）`);
@@ -172,13 +273,33 @@ export function createRecruitmentLifecycleTools(call) {
           scope.subscribeOptional(info.handle, "ScoutingBudget", ctx, 1000)
         ]);
         if (action === "read") {
+          const ctx0 = { ...ctx, Type: 0, type: 0 };
+          const ps0 = await scope.subscribeOptional("human", "HumanPersonSearch", ctx0, 1000);
+          let shortlistScoutingInterval = null;
+          if (ps0.handle) {
+            const [curSel, opts] = await Promise.all([
+              scope.subscribeOptional(ps0.handle, "ShortlistScoutingIntervalSelected", ctx0, 800),
+              scope.subscribeOptional(ps0.handle, "ShortlistScoutingIntervalOptionsList", ctx0, 800)
+            ]);
+            const parsedOpts = (opts.read?.value?.items || []).map((x, idx) => ({
+              optionIndex: idx,
+              value: x?.fields?.["0x7074766c"]?.value ?? null,
+              label: x?.fields?.["0x71764a36"]?.value ?? x?.fields?.["0x5374726e"]?.value ?? null
+            }));
+            shortlistScoutingInterval = {
+              available: Boolean(opts.handle),
+              current: curSel.read?.value ?? null,
+              options: parsedOpts
+            };
+          }
           return {
             ok: true,
             readOnly: true,
             scoutingRange: range.read?.value ?? null,
             scoutingBudget: budget.read?.value ?? null,
             validRanges: ranges.read?.value ?? null,
-            possibleAreas: areas.read?.value ?? null
+            possibleAreas: areas.read?.value ?? null,
+            shortlistScoutingInterval
           };
         }
         const id = operationId || `scouting_assign_${action}_${Date.now()}`;
@@ -199,41 +320,68 @@ export function createRecruitmentLifecycleTools(call) {
           );
           return { ok: true, operationId: id, action, eventName: "EventFmxRecruitmentFocusScoutAnalystEditConfirm", dispatch: send };
         }
-        // set_interval (REC-O31: 短名单球探持续更新周期)
-        if (!Number.isInteger(intervalValue) || intervalValue < 0) throw new Error("intervalValue 必须为非负整数。");
+        // set_interval (REC-O31, Review #36): 严禁非法值回退第 0 项，严禁选项通道缺失时退回发送裸整数
+        if (!Number.isInteger(intervalValue) || intervalValue < 0) throw new Error("intervalValue 必须为非负整数（取自 action='read' 返回的合法选项 value）。");
         const ctx0 = { ...ctx, Type: 0, type: 0 };
         const ps0 = await scope.subscribeOptional("human", "HumanPersonSearch", ctx0, 1200);
-        if (ps0.handle) {
-          const beforeSel = await scope.subscribeOptional(ps0.handle, "ShortlistScoutingIntervalSelected", ctx0, 800);
-          const opts = await scope.subscribeOptional(ps0.handle, "ShortlistScoutingIntervalOptionsList", ctx0, 800);
-          const items = opts.read?.value?.items || [];
-          let optIdx = items.findIndex(x => String(x?.fields?.["0x7074766c"]?.value) === String(intervalValue));
-          if (optIdx < 0 && intervalValue < items.length) optIdx = intervalValue;
-          if (optIdx < 0) optIdx = 0;
-          const payload = opts.handle ? { $value: { source: opts.handle, path: String(optIdx) } } : intervalValue;
-          const send = await call(
-            `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=EventFmxSetShortlistScoutUpdateInterval&source=${encodeURIComponent(ps0.handle)}&apply=true`,
-            { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }
-          );
-          await new Promise(r => setTimeout(r, 250));
-          const afterSel = await scope.subscribeOptional(ps0.handle, "ShortlistScoutingIntervalSelected", ctx0, 800);
+        if (!ps0.handle) {
           return {
-            ok: true,
-            operationId: id,
-            action,
-            intervalValue,
-            optionIndex: optIdx,
-            beforeInterval: beforeSel.read?.value ?? null,
-            afterInterval: afterSel.read?.value ?? null,
-            eventName: "EventFmxSetShortlistScoutUpdateInterval",
-            dispatch: send
+            ok: false,
+            blocked: true,
+            reason: "HumanPersonSearch(Type=0) 通道未就绪，无法读取短名单球探更新周期合法选项，已拒绝发送裸整数。",
+            zeroDispatches: true
           };
         }
+        const [beforeSel, opts] = await Promise.all([
+          scope.subscribeOptional(ps0.handle, "ShortlistScoutingIntervalSelected", ctx0, 800),
+          scope.subscribeOptional(ps0.handle, "ShortlistScoutingIntervalOptionsList", ctx0, 800)
+        ]);
+        if (!opts.handle || !Array.isArray(opts.read?.value?.items) || opts.read.value.items.length === 0) {
+          return {
+            ok: false,
+            blocked: true,
+            reason: "ShortlistScoutingIntervalOptionsList 不可用或为空，已拒绝盲写更新周期。",
+            zeroDispatches: true
+          };
+        }
+        const parsedOpts = opts.read.value.items.map((x, idx) => ({
+          optionIndex: idx,
+          value: x?.fields?.["0x7074766c"]?.value ?? null,
+          label: x?.fields?.["0x71764a36"]?.value ?? x?.fields?.["0x5374726e"]?.value ?? null
+        }));
+        const exactMatches = parsedOpts.filter(o => o.value !== null && String(o.value) === String(intervalValue));
+        if (exactMatches.length !== 1) {
+          return {
+            ok: false,
+            blocked: true,
+            reason: exactMatches.length === 0
+              ? `intervalValue=${intervalValue} 不是当前游戏合法的短名单球探更新周期选项，已拒绝写入（合法选项：${parsedOpts.map(o => `${o.value}:${o.label}`).join(" / ")}）。`
+              : `intervalValue=${intervalValue} 匹配到多个重复选项，已拒绝写入。`,
+            availableOptions: parsedOpts,
+            zeroDispatches: true
+          };
+        }
+        const matchedOpt = exactMatches[0];
         const send = await call(
-          `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=EventFmxSetShortlistScoutUpdateInterval&source=human&apply=true`,
-          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(intervalValue) }
+          `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=EventFmxSetShortlistScoutUpdateInterval&source=${encodeURIComponent(ps0.handle)}&apply=true`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ $value: { source: opts.handle, path: String(matchedOpt.optionIndex) } }) }
         );
-        return { ok: true, operationId: id, action, intervalValue, eventName: "EventFmxSetShortlistScoutUpdateInterval", dispatch: send };
+        await new Promise(r => setTimeout(r, 250));
+        const afterSel = await scope.subscribeOptional(ps0.handle, "ShortlistScoutingIntervalSelected", ctx0, 800);
+        const afterVal = afterSel.read?.value ?? null;
+        const afterNativeVal = afterVal?.fields?.["0x7074766c"]?.value ?? afterVal?.value ?? null;
+        return {
+          ok: true,
+          operationId: id,
+          action,
+          requestedIntervalValue: intervalValue,
+          selectedOption: matchedOpt,
+          beforeInterval: beforeSel.read?.value ?? null,
+          afterInterval: afterVal,
+          verified: afterNativeVal !== null && String(afterNativeVal) === String(matchedOpt.value),
+          eventName: "EventFmxSetShortlistScoutUpdateInterval",
+          dispatch: send
+        };
       });
     }
   };

@@ -212,9 +212,18 @@ export function createNewsTools(call) {
     openPressConference: args => {
       if (!args.expectedNewsIdentity || !args.operationId)
         throw new Error("Provide the original invitation identity and an operation ID.");
-      return context({ ...args, bucket: "RequiredActions" }, "navigation", ({ scope, query }) =>
-        scope.api("/api/v1/news/open-press-conference", { ...query,
-          expectedNewsIdentity: args.expectedNewsIdentity, id: args.operationId }, true));
+      return context({ ...args, bucket: "RequiredActions" }, "navigation", async ({ scope, query }) => {
+        const receipt = await scope.api("/api/v1/news/open-press-conference", { ...query,
+          expectedNewsIdentity: args.expectedNewsIdentity, id: args.operationId }, true);
+        // Review #22: 明确区分“已派发打开面板指令”与“玩家已可接管”，不把命令回执当成界面已呈现
+        return {
+          ...receipt,
+          newsIdentity: args.expectedNewsIdentity,
+          handoffStage: receipt?.ok === false ? "dispatch_failed" : "dispatched_open_request",
+          playerTakeoverVerified: false,
+          nextAction: "打开面板事件仅确认派发；请调用 get_press_conference_state 关联原邀请与会话阶段，并由玩家在游戏内接管发布会。"
+        };
+      });
     },
     pressConference: args => {
       if (args.actionIndex !== undefined || args.expectedQuestion !== undefined)
@@ -254,17 +263,33 @@ export function createNewsTools(call) {
         const conferenceIdentity = session.read.value?.identity;
         if (args.expectedConferenceIdentity && conferenceIdentity !== args.expectedConferenceIdentity)
           throw new Error("发布会会话身份不符。");
-        const state = {};
-        for (const key of ["HasPressConferenceStarted", "HasPressConferenceFinished", "TotalNumberOfQuestions", "NumberOfQuestionsAsked", "NumberOfJournalistsAttending"]) {
-          const value = await scope.subscribeOptional(session.handle, key, contexts);
-          state[key] = scalar(value.read.value);
-        }
-        // The game can retain Started after the last answer, or clear it when it
-        // closes the original invite. Finished is authoritative in both cases.
-        const phase = state.HasPressConferenceFinished === "True" ? "finished" :
-          state.HasPressConferenceStarted === "True" && state.HasPressConferenceFinished === "False" ? "started" :
-          state.HasPressConferenceStarted === "False" && state.HasPressConferenceFinished === "False" ? "not_started" : "unknown";
-        const result = { ok: true, newsIdentity, conferenceId, conferenceIdentity, phase, state, nativeActions: [] };
+        const readSessionState = async () => {
+          const st = {};
+          for (const key of ["HasPressConferenceStarted", "HasPressConferenceFinished", "TotalNumberOfQuestions", "NumberOfQuestionsAsked", "NumberOfJournalistsAttending"]) {
+            const value = await scope.subscribeOptional(session.handle, key, contexts);
+            st[key] = scalar(value.read.value);
+          }
+          const ph = st.HasPressConferenceFinished === "True" ? "finished" :
+            st.HasPressConferenceStarted === "True" && st.HasPressConferenceFinished === "False" ? "started" :
+            st.HasPressConferenceStarted === "False" && st.HasPressConferenceFinished === "False" ? "not_started" : "unknown";
+          return { state: st, phase: ph };
+        };
+        const { state, phase } = await readSessionState();
+        // Review #22: 明确区分会话阶段与玩家接管状态（不读取任何题目或回答）
+        const handoffStage = phase === "finished" ? "finished" :
+          phase === "started" ? "session_started_handoff_to_player" :
+          phase === "not_started" ? "not_started" : "unknown";
+        const result = {
+          ok: true,
+          newsIdentity,
+          conferenceId,
+          conferenceIdentity,
+          phase,
+          handoffStage,
+          playerPanelVisibleVerified: false,
+          state,
+          nativeActions: []
+        };
         if (knownSessionLookup || state.HasPressConferenceStarted !== "False" || state.HasPressConferenceFinished !== "False") {
           if (args.operationId) throw new Error("The press conference cannot be started in its current state.");
           return result;
@@ -286,8 +311,30 @@ export function createNewsTools(call) {
           const requested = args.handoff || "start";
           const choice = handoffs.find(item => handoffEvents.get(item.eventId) === requested && item.choiceToken === args.expectedChoiceToken);
           if (!choice) throw new Error("Refresh the press conference handoff preview. FM must offer this action.");
-          return scope.api("/api/v1/communication/execute", { ...query, option: choice.index,
+          const receipt = await scope.api("/api/v1/communication/execute", { ...query, option: choice.index,
             choiceToken: choice.choiceToken, id: args.operationId, acceptConfirmation: args.acceptConfirmation === true }, true);
+          let postObservation = null;
+          try {
+            await new Promise(r => setTimeout(r, 150));
+            postObservation = await readSessionState();
+          } catch {}
+          const postPhase = postObservation?.phase || "unknown";
+          const postStage = requested === "delegate"
+            ? (postPhase === "finished" ? "delegated_finished" : "dispatched_delegate")
+            : (postPhase === "started" ? "session_started_handoff_to_player" : "dispatched_start");
+          return {
+            ...receipt,
+            newsIdentity,
+            conferenceId,
+            conferenceIdentity,
+            requestedHandoff: requested,
+            handoffStage: postStage,
+            playerPanelVisibleVerified: false,
+            ...(postObservation ? { sessionObservation: postObservation } : {}),
+            note: requested === "delegate"
+              ? "已派发委派助教出席发布会；会话状态由 sessionObservation 独立观察。"
+              : "已派发启动发布会；会话是否就绪由 sessionObservation 观察，具体界面呈现与答题均由玩家在游戏内完成。"
+          };
         }
         result.nativeActions = handoffs.map(choice => ({ bucket, index: choice.index,
           label: handoffEvents.get(choice.eventId) === "delegate" ? "派助教出席" : "启动发布会",

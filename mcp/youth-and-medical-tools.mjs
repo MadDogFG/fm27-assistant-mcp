@@ -1,20 +1,10 @@
-import { createLiveClient, clean } from "./live-client.mjs";
+import { createLiveClient, clean, scalar } from "./live-client.mjs";
+import { createPropertyRegistryCache } from "./core/property-registry.mjs";
 
-// 青训候选/入队管理（SQU-O16a/b/c/d）与伤病医疗方案读取（SQU-O12a）工具组
+// 青训候选/入队管理（SQU-O16a/b/c/d）与伤病医疗方案读取（SQU-O12a / Review #31/#34）工具组
 export function createYouthAndMedicalTools(call) {
   const client = createLiveClient(call);
-  let cachedIdMap = null;
-
-  async function getPropertyMap() {
-    if (cachedIdMap) return cachedIdMap;
-    try {
-      const reg = await call("/api/v1/internal/registry?kind=properties");
-      cachedIdMap = new Map((reg?.items || []).map(x => [x.id, x.name]));
-    } catch {
-      cachedIdMap = new Map();
-    }
-    return cachedIdMap;
-  }
+  const { getPropertyMap } = createPropertyRegistryCache(call);
 
   const stripTags = text => clean(text).replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").trim();
 
@@ -68,19 +58,40 @@ export function createYouthAndMedicalTools(call) {
     });
   }
 
-  // SQU-O16a/c: 调动或增删青训候选球员（EventFmxAddRemoveYouthPlayer）
-  async function manageYouthCandidate({ playerIndex = 0, add = true, operationId } = {}) {
+  // SQU-O16a/c: 调动或增删青训候选球员（要求显式 playerIndex 与真实候选列表身份校验）
+  async function manageYouthCandidate({ playerIndex, expectedCandidateIdentity, add = true, operationId } = {}) {
     if (!Number.isInteger(playerIndex) || playerIndex < 0) {
-      throw new Error("playerIndex 必须为非负整数。");
+      throw new Error("必须提供有效的非负整数 playerIndex。");
     }
     const id = operationId || `youth_candidate_${add ? "add" : "rem"}_${Date.now()}`;
     return client.scope(async scope => {
       const club = await scope.subscribe("human", "Club");
+      const ctx = { human: { source: "human" }, club: { source: club.handle } };
+      const listSub = await scope.subscribeOptional({ source: club.handle }, "AllYouthCandidates", ctx, 1000);
+      if (!listSub.handle) {
+        return { ok: false, blocked: true, status: "candidates_unavailable", reason: "当前俱乐部未暴露 AllYouthCandidates 青训候选列表，已拒绝盲发索引。", zeroDispatches: true };
+      }
+      const items = listSub.read?.value?.items || [];
+      const count = listSub.read?.value?.count ?? items.length;
+      if (playerIndex >= count) {
+        throw new Error(`playerIndex 越界: ${playerIndex} >= ${count}`);
+      }
+      const actualId = items[playerIndex]?.identity || null;
+      if (expectedCandidateIdentity && actualId !== expectedCandidateIdentity) {
+        return {
+          ok: false,
+          blocked: true,
+          reason: "青训候选列表已变化，目标候选身份与 expectedCandidateIdentity 不匹配，已中止且零派发。",
+          expectedCandidateIdentity,
+          observedCandidateIdentity: actualId,
+          zeroDispatches: true
+        };
+      }
       const send = await call(
         `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=EventFmxAddRemoveYouthPlayer&source=${encodeURIComponent(club.handle)}&apply=true`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(playerIndex) }
       );
-      return { ok: true, operationId: id, playerIndex, add: Boolean(add), dispatch: send };
+      return { ok: true, operationId: id, playerIndex, candidateIdentity: actualId, add: Boolean(add), dispatch: send };
     });
   }
 
@@ -103,12 +114,19 @@ export function createYouthAndMedicalTools(call) {
         out[prop] = sub.handle ? decodeValue(sub.read?.value ?? null, idMap) : { unavailable: sub.unavailable || "no_handle" };
         if (sub.handle) await scope.release(sub.handle);
       }
-      return { ok: true, readOnly: true, squadIndex, player: out };
+      return {
+        ok: true,
+        readOnly: true,
+        squadIndex,
+        playerIdentity: players.read?.value?.items?.[squadIndex]?.identity || null,
+        player: out
+      };
     });
   }
 
-  // SQU-O12b/c/d / SQU-O13a/b/c: 执行伤病治疗决策（寻求专家/手术/休养）与康复训练控制（安排康复/恢复训练/带伤训练）
-  async function manageInjuryTreatment({ squadIndex = 0, action = "read", optionValue, operationId } = {}) {
+  // SQU-O12b/c/d / SQU-O13a/b/c (Review #31): 读取球员活跃伤情、分列治疗/康复训练/可参赛独立状态与脑震荡复出警示；
+  // 严禁使用硬编码 1/2/3 或任意数值覆盖写入未校验的医疗选项，仅在游戏明确提供合法医疗选项时允许校验后操作，否则安全阻断并零写入
+  async function manageInjuryTreatment({ squadIndex = 0, action = "read", operationId } = {}) {
     const validActions = ["read", "specialist", "surgery", "rest", "rehab", "resume_training", "train_while_injured"];
     if (!validActions.includes(action)) {
       throw new Error(`未知伤病治疗/康复动作: ${action}（支持 ${validActions.join("/")}）`);
@@ -124,79 +142,160 @@ export function createYouthAndMedicalTools(call) {
       const count = players.read?.value?.count ?? 0;
       if (squadIndex >= count) throw new Error(`squadIndex 越界: ${squadIndex} >= ${count}`);
       const pRef = { source: players.handle, path: String(squadIndex) };
-      const inj = await scope.subscribeOptional(pRef, "CurrentInjury", ctx, 1000);
+      const playerIdentity = players.read?.value?.items?.[squadIndex]?.identity || null;
+      const [nameR, inj] = await Promise.all([
+        scope.readAndRelease(pRef, "Name", ctx, 600),
+        scope.subscribeOptional(pRef, "CurrentInjury", ctx, 1000)
+      ]);
       if (!inj.handle) {
-        return { ok: false, blocked: true, reason: "该球员当前无 CurrentInjury 会话。", squadIndex };
+        return {
+          ok: false,
+          blocked: true,
+          reason: "该球员当前无 CurrentInjury 会话。",
+          squadIndex,
+          playerIdentity,
+          playerName: nameR.scalar || null
+        };
       }
-      const [isAct, tr, av] = await Promise.all([
+      const [isAct, tr, av, descSub, nameSub] = await Promise.all([
         scope.subscribeOptional(inj.handle, "IsActive", ctx, 800),
         scope.subscribeOptional(inj.handle, "InjuryTreatment", ctx, 800),
-        scope.subscribeOptional(inj.handle, "InjuryAvailability", ctx, 800)
+        scope.subscribeOptional(inj.handle, "InjuryAvailability", ctx, 800),
+        scope.subscribeOptional(inj.handle, "Description", ctx, 600),
+        scope.subscribeOptional(inj.handle, "Name", ctx, 600)
       ]);
-      const active = isAct.read?.value?.value === "True";
+      const activeRaw = scalar(isAct.read?.value);
+      const active = activeRaw === "True" ? true : (activeRaw === "False" ? false : null);
+      const treatmentVal = tr.handle ? decodeValue(tr.read?.value ?? null, idMap) : { unavailable: tr.unavailable || "no_handle" };
+      const availabilityVal = av.handle ? decodeValue(av.read?.value ?? null, idMap) : { unavailable: av.unavailable || "no_handle" };
+      const injuryName = stripTags(scalar(nameSub.read?.value) || "");
+      const injuryDesc = stripTags(scalar(descSub.read?.value) || "");
+      const combinedMedicalText = [injuryName, injuryDesc, JSON.stringify(treatmentVal), JSON.stringify(availabilityVal)].join(" ");
+      const isConcussion = /脑震荡|concussion/i.test(combinedMedicalText);
+
+      // 将治疗方案、恢复训练状态、可参赛/脑震荡复出许可严格拆分为三个独立状态字段
+      const medicalState = {
+        injuryIdentity: inj.read?.value?.identity || null,
+        injuryName: injuryName || injuryDesc || null,
+        injuryDescription: injuryDesc || null,
+        isActive: active,
+        isConcussionProtocol: isConcussion,
+        treatmentStatus: treatmentVal,
+        rehabTrainingStatus: availabilityVal,
+        matchClearanceStatus: isConcussion
+          ? { status: "requires_medical_concussion_clearance", note: "FM27 脑震荡适用专门复出许可流程，不能从单一 InjuryAvailability 推导已获准复训或出场。" }
+          : (active === false ? { status: "no_active_injury" } : { status: "unknown_pending_medical_clearance" })
+      };
+
       if (action === "read") {
         return {
           ok: true,
           readOnly: true,
           squadIndex,
-          isActive: active,
-          injuryTreatment: decodeValue(tr.read?.value ?? null, idMap),
-          injuryAvailability: decodeValue(av.read?.value ?? null, idMap)
+          playerIdentity,
+          playerName: nameR.scalar || null,
+          ...medicalState,
+          injuryTreatment: treatmentVal,
+          injuryAvailability: availabilityVal
         };
       }
-      if (!active) {
-        return { ok: false, blocked: true, reason: "该球员当前没有活跃伤病（IsActive=False）。", squadIndex };
+      if (active !== true) {
+        return {
+          ok: false,
+          blocked: true,
+          reason: active === null ? "无法确认该球员伤病活跃状态（IsActive 未知），已中止且零写入。" : "该球员当前没有活跃伤病（IsActive=False）。",
+          squadIndex,
+          playerIdentity,
+          ...medicalState,
+          zeroWrites: true
+        };
       }
-      const isRehabOrTrain = ["rehab", "resume_training", "train_while_injured"].includes(action);
-      const targetSub = isRehabOrTrain ? av : tr;
-      if (!targetSub.handle) {
-        return { ok: false, blocked: true, reason: `CurrentInjury 未暴露 ${isRehabOrTrain ? "InjuryAvailability" : "InjuryTreatment"} 属性。` };
-      }
-      const defaultMap = { specialist: 1, surgery: 2, rest: 0, rehab: 1, resume_training: 2, train_while_injured: 3 };
-      const val = optionValue !== undefined ? optionValue : defaultMap[action];
-      const upd = await call(
-        `/api/v1/internal/update?handle=${encodeURIComponent(targetSub.handle)}&apply=true`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(val) }
-      );
-      await new Promise(r => setTimeout(r, 150));
-      const afterSub = await scope.subscribeOptional(inj.handle, isRehabOrTrain ? "InjuryAvailability" : "InjuryTreatment", ctx, 800);
+
+      // Review #31: 绝不使用硬编码数字映射或外部裸数值直接覆写 InjuryTreatment / InjuryAvailability
       return {
-        ok: true,
-        operationId: operationId || `injury_${action}_${Date.now()}`,
-        action,
+        ok: false,
+        blocked: true,
+        unsupportedBranch: true,
+        operationId: operationId || null,
         squadIndex,
-        requestedValue: val,
-        update: upd,
-        afterValue: decodeValue(afterSub.read?.value ?? null, idMap)
+        playerIdentity,
+        playerName: nameR.scalar || null,
+        requestedAction: action,
+        ...medicalState,
+        reason: isConcussion
+          ? "检测到脑震荡相关伤情，FM27 要求经过专门医疗复出许可流程；且当前接口未读取到该伤情允许的原生治疗/复训候选项，已拒绝硬编码数值写入。请使用 get_medical_report_options 或在游戏内医疗中心由队医确认。"
+          : `当前伤病会话未提供 "${action}" 的原生合法医疗候选列表与完整决定流程，已拒绝使用硬编码数值写入 InjuryTreatment/InjuryAvailability。请先通过 get_medical_report_options 查看队医菜单或在游戏内医疗中心确认。`,
+        zeroWrites: true
       };
     });
   }
 
-  // SQU-O16b/d: 为青训候选球员提供青年/职业合同或安排青训试训
-  async function offerYouthContractOrTrial({ playerIndex = 0, action = "youth_contract", operationId } = {}) {
+  // SQU-O16b/d (Review #34): 区分“青训计数未就绪”与“确无候选(0)”，且禁止向原生合同/青训事件发送自组 JSON 对象
+  async function offerYouthContractOrTrial({ playerIndex, expectedCandidateIdentity, action = "youth_contract", operationId } = {}) {
     if (!["youth_contract", "pro_contract", "trial"].includes(action)) {
       throw new Error(`未知青训决策动作: ${action}（支持 youth_contract/pro_contract/trial）`);
     }
     if (!Number.isInteger(playerIndex) || playerIndex < 0) {
-      throw new Error("playerIndex 必须为非负整数。");
+      throw new Error("必须提供有效的非负整数 playerIndex。");
     }
-    const id = operationId || `youth_${action}_${Date.now()}`;
     return client.scope(async scope => {
       const club = await scope.subscribe("human", "Club");
-      const countSub = await scope.subscribeOptional({ source: club.handle }, "YouthCandidatesCount", { human: { source: "human" }, club: { source: club.handle } }, 800);
-      const count = Number(countSub.read?.value?.value ?? 0);
-      if (count === 0) {
-        return { ok: false, blocked: true, reason: "当前俱乐部没有青训候选球员（YouthCandidatesCount=0）。", playerIndex, action };
+      const ctx = { human: { source: "human" }, club: { source: club.handle } };
+      const [countSub, listSub] = await Promise.all([
+        scope.subscribeOptional({ source: club.handle }, "YouthCandidatesCount", ctx, 800),
+        scope.subscribeOptional({ source: club.handle }, "AllYouthCandidates", ctx, 900)
+      ]);
+      if (!countSub.handle && !listSub.handle) {
+        return {
+          ok: false,
+          blocked: true,
+          status: "unavailable",
+          reason: "青训候选数据通道（YouthCandidatesCount / AllYouthCandidates）暂未就绪，无法确认候选范围（不等同于无青训候选），已阻断且零派发。",
+          playerIndex,
+          action,
+          zeroDispatches: true
+        };
+      }
+      const items = listSub.read?.value?.items || [];
+      const count = countSub.handle ? Number(scalar(countSub.read?.value)) : items.length;
+      if (!Number.isFinite(count) || count === 0) {
+        return {
+          ok: false,
+          blocked: true,
+          status: "no_youth_candidates",
+          reason: "当前俱乐部确无青训候选球员（YouthCandidatesCount=0）。",
+          playerIndex,
+          action,
+          zeroDispatches: true
+        };
       }
       if (playerIndex >= count) {
         throw new Error(`playerIndex 越界: ${playerIndex} >= ${count}`);
       }
-      const eventName = action === "trial" ? "EventFmxAddRemoveYouthPlayer" : "EventFmxProceedToContractNegotiations";
-      const send = await call(
-        `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=${encodeURIComponent(eventName)}&source=${encodeURIComponent(club.handle)}&apply=true`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ playerIndex, action }) }
-      );
-      return { ok: true, operationId: id, playerIndex, action, eventName, dispatch: send };
+      const candidateIdentity = items[playerIndex]?.identity || null;
+      if (expectedCandidateIdentity && candidateIdentity && candidateIdentity !== expectedCandidateIdentity) {
+        return {
+          ok: false,
+          blocked: true,
+          reason: "青训候选列表已变化，目标候选身份与 expectedCandidateIdentity 不符，已阻断且零派发。",
+          expectedCandidateIdentity,
+          observedCandidateIdentity: candidateIdentity,
+          zeroDispatches: true
+        };
+      }
+      // 原实现向 EventFmxProceedToContractNegotiations / EventFmxAddRemoveYouthPlayer 发送了自组对象 { playerIndex, action }，
+      // 缺少绑定真实 PersonReference 的草稿入口；引导使用通用人员动作菜单（open_contract_draft / execute_player_action）
+      return {
+        ok: false,
+        blocked: true,
+        unsupportedBranch: true,
+        operationId: operationId || null,
+        playerIndex,
+        candidateIdentity,
+        action,
+        reason: "青训合同/试训需绑定具体青训候选人的 PersonReference 原生动作菜单（不可向俱乐部事件发送自组 {playerIndex,action} 载荷）。请先用 get_club_facilities_and_youth 获取候选人引用，再通过 get_player_actions + open_contract_draft 准备合同草稿并交玩家确认。",
+        zeroDispatches: true
+      };
     });
   }
 

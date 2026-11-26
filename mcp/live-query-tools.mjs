@@ -2,7 +2,11 @@ import { createLiveClient, clean, scalar } from "./live-client.mjs";
 
 /**
  * live-query-tools.mjs — 通用只读实时节点自省与结构化查询工具（live_describe / live_query）
- * 纯网关侧实现，严格只读，自动管理与即时释放订阅句柄，绝不修改游戏状态。
+ * 修复 Review #47 与对话权限边界补充检查：
+ * - 区分原生总数（nativeTotal）、已内联数（inlinedCount）、扫描数（scanned）、命中数（matched）
+ * - 支持突破 50 行与 64 内联上限的续扫（scanFrom / scanLimit + nextScanFrom / partialScan）
+ * - 自动补读 where / orderBy 引用的隐藏字段，无需强迫放入 select 输出
+ * - 屏蔽对玩家独占的发布会问题/对话回复节点的读取
  */
 
 // 4字节打包十六进制键解码为可读 ASCII（如 0x4d617856 -> "MaxV"）
@@ -27,6 +31,24 @@ const KNOWN_HEX_ALIASES = {
   "0x34453354": "children",
   "0x526f7744": "rowData",
 };
+
+// 禁止通过通用只读通道投影属于玩家的发布会题目、问答或对话回复选项
+const FORBIDDEN_DIALOGUE_PATH_RE = /(PressConferenceEditSession|ConversationEditSession|DialogueQuestion|PressConferenceQuestion|InterviewQuestion|SpeakTo.*(RequiredActions|OptionalActions|AdviceActions|ExitActions))/i;
+const FORBIDDEN_DIALOGUE_FIELD_RE = /^(PressConferenceQuestion|CurrentQuestion|QuestionText|DialogueOptions|ConversationReplies|SpeakTo)$/i;
+
+function assertAllowedLiveTarget(nodeSpec, fields = []) {
+  const nodeStr = typeof nodeSpec === "string"
+    ? nodeSpec
+    : `${nodeSpec?.source || ""}/${nodeSpec?.path || ""}`;
+  if (FORBIDDEN_DIALOGUE_PATH_RE.test(nodeStr)) {
+    throw new Error("范围边界：live_describe / live_query 禁止读取发布会题目或玩家对话回复节点，请使用专用发布会交接工具。");
+  }
+  for (const f of fields) {
+    if (FORBIDDEN_DIALOGUE_FIELD_RE.test(String(f || "").split(".")[0])) {
+      throw new Error(`范围边界：live_query 禁止读取对话/发布会问答字段 "${f}"，对话问题与选项由玩家本人处理。`);
+    }
+  }
+}
 
 export function createLiveQueryTools(call) {
   const client = createLiveClient(call);
@@ -87,11 +109,11 @@ export function createLiveQueryTools(call) {
     let currentValue = null;
     if (source === "human") currentRef = "human";
     else if (source === "club") {
-      if (!clubSub.handle) throw new Error("当前无法获取 Club 节点（可能未加载存档）。");
+      if (!clubSub.handle) throw new Error("当前无法获取 Club 节点（可能未加载存档或经理待业）。");
       currentRef = clubSub.handle;
       currentValue = clubSub.read?.value ?? null;
     } else if (source === "team") {
-      if (!teamSub.handle) throw new Error("当前无法获取 Team 节点（可能未加载存档）。");
+      if (!teamSub.handle) throw new Error("当前无法获取 Team 节点（可能未加载存档或经理待业）。");
       currentRef = teamSub.handle;
       currentValue = teamSub.read?.value ?? null;
     } else if (source === "training") {
@@ -114,7 +136,6 @@ export function createLiveQueryTools(call) {
       if (/^\d+$/.test(seg)) {
         const nextRef = typeof currentRef === "string" ? { source: currentRef, path: seg } : { source: currentRef.source, path: `${currentRef.path}/${seg}` };
         currentRef = nextRef;
-        // 如果是列表元素，更新 Person/Team 上下文推断
         if (currentValue?.kind === "list" && Array.isArray(currentValue.items)) {
           const item = currentValue.items[Number(seg)];
           currentValue = item ?? null;
@@ -150,7 +171,6 @@ export function createLiveQueryTools(call) {
       }
 
       let sub = await scope.subscribeOptional(targetRef, fieldName, contexts, 1200);
-      // 若在当前球员节点找不到，且当前是 PersonReference 或列表项，尝试常见子对象 LoanContract / FullContract
       if (!sub.handle && /当前引用不提供/.test(sub.unavailable || "")) {
         const fallbackParents = ["LoanContract", "FullContract", "ClubCoachReport"];
         for (const p of fallbackParents) {
@@ -213,7 +233,7 @@ export function createLiveQueryTools(call) {
     return true;
   }
 
-  // 瞬态实时通道错误自动退避重试（解决游戏数据尚未就绪或短句柄过期导致的偶发失败）
+  // 瞬态实时通道错误自动退避重试
   async function withTransientRetry(fn, maxAttempts = 3) {
     let lastErr;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -234,12 +254,12 @@ export function createLiveQueryTools(call) {
 
   // 1. live_describe：探索节点上可用属性及所需上下文，无需盲猜
   async function describe({ node = "team", filter = "", limit = 100, contexts: userContexts = {} } = {}) {
+    assertAllowedLiveTarget(node);
     return withTransientRetry(() => client.scope(async scope => {
       const resolved = await resolveNode(scope, node, userContexts);
       let inspectTarget = resolved.ref;
-      // 如果当前节点是列表集合（如 team.Players），自动取第 0 个元素探测单条记录的可用属性
       let inspectedSample = null;
-      if (resolved.value?.kind === "list" && resolved.value.items?.length > 0) {
+      if (resolved.value?.kind === "list" && (resolved.value.count ?? resolved.value.items?.length ?? 0) > 0) {
         inspectTarget = typeof resolved.ref === "string"
           ? { source: resolved.ref, path: "0" }
           : { source: resolved.ref.source, path: `${resolved.ref.path}/0` };
@@ -265,7 +285,7 @@ export function createLiveQueryTools(call) {
     }));
   }
 
-  // 2. live_query：结构化只读查询任意节点/列表的属性，支持过滤、排序、引用解析、分批防超时与 hex 解码
+  // 2. live_query (Review #47)：使用原生 count（突破 64 内联与 50 行限制），补读 where/orderBy 隐藏字段并明确区分 nativeTotal/scanned/matched/partialScan
   async function query({
     node = "team",
     select = [],
@@ -273,6 +293,8 @@ export function createLiveQueryTools(call) {
     orderBy = null,
     limit = 30,
     offset = 0,
+    scanFrom = 0,
+    scanLimit = 100,
     resolveRefs = true,
     raw = false,
     contexts: userContexts = {}
@@ -280,11 +302,18 @@ export function createLiveQueryTools(call) {
     if (!Array.isArray(select) || !select.length) {
       throw new Error("必须提供 select 属性名数组（可先用 live_describe 查看可用属性）。");
     }
+    const extraFields = new Set();
+    for (const cond of Array.isArray(where) ? where : []) {
+      if (cond?.field && !select.includes(cond.field)) extraFields.add(cond.field);
+    }
+    if (orderBy?.field && !select.includes(orderBy.field)) extraFields.add(orderBy.field);
+    const allFieldsToRead = [...select, ...extraFields];
+    assertAllowedLiveTarget(node, allFieldsToRead);
+
     return withTransientRetry(() => client.scope(async scope => {
       const resolved = await resolveNode(scope, node, userContexts);
-      const isList = resolved.value?.kind === "list" && Array.isArray(resolved.value.items);
+      const isList = resolved.value?.kind === "list";
 
-      // 场景 A：单节点直接查询（如 club / team / Players/19），超过 6 个字段时自动按批次释放句柄防超时
       if (!isList) {
         const metaProps = await scope.properties(resolved.ref, "").catch(() => []);
         const propNamesCache = metaProps.map(p => p.name.split(":")[0]);
@@ -302,16 +331,22 @@ export function createLiveQueryTools(call) {
         return { ok: true, readOnly: true, mode: "record", node, data: record };
       }
 
-      // 场景 B：列表集合查询（如 team.Players）
-      const total = resolved.value.items.length;
+      const inlinedItems = Array.isArray(resolved.value.items) ? resolved.value.items : [];
+      const nativeTotal = Number.isInteger(resolved.value.count) ? resolved.value.count : inlinedItems.length;
+      const inlinedCount = inlinedItems.length;
       const start = Math.max(0, Number(offset) || 0);
-      const maxRows = Math.max(1, Math.min(50, Number(limit) || 30));
-      const needFullScan = (Array.isArray(where) && where.length > 0) || Boolean(orderBy?.field);
-      const scanStart = needFullScan ? 0 : start;
-      const scanEnd = needFullScan ? Math.min(total, 50) : Math.min(total, start + maxRows);
+      const maxRows = Math.max(1, Math.min(200, Number(limit) || 30));
+      const safeScanFrom = Math.max(0, Number(scanFrom) || 0);
+      const safeScanLimit = Math.max(1, Math.min(200, Number(scanLimit) || 100));
+      const needScanFilterOrSort = (Array.isArray(where) && where.length > 0) || Boolean(orderBy?.field);
+
+      const scanStart = needScanFilterOrSort ? Math.min(nativeTotal, safeScanFrom) : Math.min(nativeTotal, start);
+      const scanEnd = needScanFilterOrSort
+        ? Math.min(nativeTotal, scanStart + safeScanLimit)
+        : Math.min(nativeTotal, scanStart + maxRows);
 
       let propNamesCache = null;
-      if (total > 0) {
+      if (nativeTotal > 0) {
         const sampleRef = typeof resolved.ref === "string"
           ? { source: resolved.ref, path: "0" }
           : { source: resolved.ref.source, path: `${resolved.ref.path}/0` };
@@ -319,27 +354,32 @@ export function createLiveQueryTools(call) {
         propNamesCache = metaProps.map(p => p.name.split(":")[0]);
       }
 
-      const rows = [];
+      const matchedFullRows = [];
+      let scanned = 0;
+      const sampleItemType = inlinedItems[0]?.type || null;
+
       for (let i = scanStart; i < scanEnd; i++) {
-        const item = resolved.value.items[i];
+        scanned++;
+        const item = i < inlinedItems.length ? inlinedItems[i] : null;
+        const itemType = item?.type || sampleItemType;
         const itemRef = typeof resolved.ref === "string"
           ? { source: resolved.ref, path: String(i) }
           : { source: resolved.ref.source, path: `${resolved.ref.path}/${i}` };
         const itemCtx = { ...resolved.contexts };
-        if (item?.type === "FM.UI.PersonReference") itemCtx.Person = itemRef;
-        else if (item?.type === "FM.UI.TeamReference") { itemCtx.team = itemRef; itemCtx.Team = itemRef; }
+        if (itemType === "FM.UI.PersonReference") itemCtx.Person = itemRef;
+        else if (itemType === "FM.UI.TeamReference") { itemCtx.team = itemRef; itemCtx.Team = itemRef; }
 
-        const row = { index: i };
-        for (const field of select) {
-          row[field] = await readField(scope, itemRef, field, itemCtx, resolveRefs, raw, propNamesCache);
+        const evalRow = { index: i };
+        for (const field of allFieldsToRead) {
+          evalRow[field] = await readField(scope, itemRef, field, itemCtx, resolveRefs, raw, propNamesCache);
         }
-        if (matchWhere(row, where)) rows.push(row);
+        if (matchWhere(evalRow, where)) matchedFullRows.push(evalRow);
       }
 
       if (orderBy?.field) {
         const f = orderBy.field;
         const asc = String(orderBy.dir || "asc").toLowerCase() !== "desc";
-        rows.sort((a, b) => {
+        matchedFullRows.sort((a, b) => {
           const va = a[f], vb = b[f];
           const na = Number(va), nb = Number(vb);
           if (!Number.isNaN(na) && !Number.isNaN(nb) && va !== null && vb !== null && va !== "") {
@@ -349,16 +389,33 @@ export function createLiveQueryTools(call) {
         });
       }
 
-      const paged = needFullScan ? rows.slice(start, start + maxRows) : rows;
+      // 剔除未出现在 select 中的过滤/排序辅助字段，保持输出干净
+      const projectRow = fullRow => {
+        const out = { index: fullRow.index };
+        for (const field of select) out[field] = fullRow[field];
+        return out;
+      };
+
+      const paged = (needScanFilterOrSort ? matchedFullRows.slice(start, start + maxRows) : matchedFullRows).map(projectRow);
+      const partialScan = scanStart > 0 || scanEnd < nativeTotal;
+      const nextScanFrom = scanEnd < nativeTotal ? scanEnd : null;
+
       return {
         ok: true,
         readOnly: true,
         mode: "list",
         node,
-        total,
-        matched: needFullScan ? rows.length : total,
+        nativeTotal,
+        total: nativeTotal,
+        inlinedCount,
+        scanStart,
+        scanned,
+        partialScan,
+        nextScanFrom,
+        matched: needScanFilterOrSort ? matchedFullRows.length : nativeTotal,
         offset: start,
         returned: paged.length,
+        ...(partialScan && needScanFilterOrSort ? { note: `当前仅扫描了索引 [${scanStart}..${scanEnd - 1}]（共 ${scanned}/${nativeTotal} 行）；如需继续向后筛选请传 scanFrom=${nextScanFrom}。` } : {}),
         rows: paged
       };
     }));

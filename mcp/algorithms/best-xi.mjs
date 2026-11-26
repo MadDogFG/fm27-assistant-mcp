@@ -1,6 +1,10 @@
 /**
  * mcp/algorithms/best-xi.mjs — 基于精确匈牙利最大权二分图匹配的最优首发 11 人算法（纯 JS、零依赖）。
- * 彻底替代 LLM 心算排阵，数学保证绝不一人两用，综合考量位置熟练度、体能、伤停、锐度与青训倾斜。
+ * 修复 Review #27/#28/#29/#30/#52：
+ * - 消费全量分页阵容快照（覆盖 >30 人一线队，并支持与体检复用同日快照）
+ * - 严格解析中文左右/中路修饰词（杜绝把“中场 (左)”误标为 MC）及多周期/小数逗号薪资
+ * - 引入伤停/外租/资格三态、严格轮休模式（strictMinCondition）与门将硬可行性校验
+ * - 优先采用教练星级评估战力、支持自定义替补席人数（benchSize）、不再对未识别阵型静默回退 4-2-3-1
  */
 import { createSquadSnapshotTools } from "../squad-snapshot-tools.mjs";
 import { createLiveClient, clean, scalar } from "../live-client.mjs";
@@ -17,7 +21,19 @@ export const FORMATION_TEMPLATES = {
   "4-4-2-diamond": ["GK", "DR", "DC", "DC", "DL", "DM", "MC", "MC", "AMC", "ST", "ST"]
 };
 
-// 将中英文混合位置字符串解析为标准化位置标签集合
+// 从单个中文位置片段中提取括号内方向修饰词（如“中场 (左)”->只提取“(左)”，避免把“中场”里的“中”字误判为中路！）
+function extractSideFlags(segment, baseWordsRe) {
+  const parenMatch = segment.match(/[（(]([^)）]+)[)）]/);
+  const qualifier = parenMatch ? parenMatch[1] : segment.replace(baseWordsRe, "");
+  return {
+    hasL: /左/.test(qualifier),
+    hasR: /右/.test(qualifier),
+    hasC: /中/.test(qualifier),
+    hasQualifier: Boolean(parenMatch || /[左右中]/.test(qualifier))
+  };
+}
+
+// 将中英文混合位置字符串解析为标准化位置标签集合（Review #30）
 export function parsePositionTags(posText) {
   const s = String(posText || "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
   const low = s.toLowerCase();
@@ -28,44 +44,44 @@ export function parsePositionTags(posText) {
     return tags;
   }
 
-  // 中文位置精确解析（处理“后卫 (右中)”、“前腰 (左中)”、“中场 (中)”等 FM 中文格式）
-  if (/后卫|中卫|边卫|翼卫/.test(s)) {
-    const isWingback = /翼卫|边后卫/.test(s);
-    const hasL = /左/.test(s);
-    const hasR = /右/.test(s);
-    const hasC = /中/.test(s) || /中卫/.test(s);
-    if (hasC) tags.add("DC");
-    if (hasL) { tags.add("DL"); tags.add("WBL"); }
-    if (hasR) { tags.add("DR"); tags.add("WBR"); }
-    if (!hasL && !hasR && !hasC) {
-      tags.add(isWingback ? "WBR" : "DC");
-      if (isWingback) tags.add("WBL");
+  // 按中文/英文分隔符分段解析（如 "后卫 (右)，中场 (左)"），防止前一段的“右”串到后一段
+  const segments = s.split(/[,，、;/|]+/).map(x => x.trim()).filter(Boolean);
+  for (const seg of segments) {
+    if (/后卫|中卫|边卫|翼卫/.test(seg)) {
+      const isWingback = /翼卫|边后卫/.test(seg);
+      const isCentreDef = /中卫|中后卫/.test(seg);
+      const { hasL, hasR, hasC } = extractSideFlags(seg, /中后卫|边后卫|后卫|中卫|边卫|翼卫/g);
+      if (hasC || isCentreDef) tags.add("DC");
+      if (hasL) { tags.add("DL"); tags.add("WBL"); }
+      if (hasR) { tags.add("DR"); tags.add("WBR"); }
+      if (!hasL && !hasR && !hasC && !isCentreDef) {
+        tags.add(isWingback ? "WBR" : "DC");
+        if (isWingback) tags.add("WBL");
+      }
     }
+    if (/后腰|防守型中场/.test(seg)) tags.add("DM");
+    if (/前腰|进攻型中场/.test(seg)) {
+      const { hasL, hasR, hasC } = extractSideFlags(seg, /进攻型中场|前腰/g);
+      if (hasC) tags.add("AMC");
+      if (hasL) tags.add("AML");
+      if (hasR) tags.add("AMR");
+      if (!hasL && !hasR && !hasC) tags.add("AMC");
+    }
+    if (/边锋/.test(seg)) {
+      const { hasL, hasR } = extractSideFlags(seg, /边锋/g);
+      if (hasL) tags.add("AML");
+      if (hasR) tags.add("AMR");
+      if (!hasL && !hasR) { tags.add("AML"); tags.add("AMR"); }
+    }
+    if (/(^|[^进攻型防守型])中场/.test(seg) && !/前腰|后腰|进攻型中场|防守型中场/.test(seg)) {
+      // 关键修复：先剥离“中场”二字再查“中”，因此“中场 (左)”绝不会误加 MC
+      const { hasL, hasR, hasC } = extractSideFlags(seg, /中场/g);
+      if (hasC || (!hasL && !hasR)) tags.add("MC");
+      if (hasL) tags.add("ML");
+      if (hasR) tags.add("MR");
+    }
+    if (/前锋|中锋|射手/.test(seg)) tags.add("ST");
   }
-  if (/后腰/.test(s)) tags.add("DM");
-  if (/前腰|进攻型中场/.test(s)) {
-    const hasL = /左/.test(s);
-    const hasR = /右/.test(s);
-    const hasC = /中/.test(s);
-    if (hasC) tags.add("AMC");
-    if (hasL) tags.add("AML");
-    if (hasR) tags.add("AMR");
-    if (!hasL && !hasR && !hasC) tags.add("AMC");
-  }
-  if (/边锋/.test(s)) {
-    if (/左/.test(s)) tags.add("AML");
-    if (/右/.test(s)) tags.add("AMR");
-    if (!/左|右/.test(s)) { tags.add("AML"); tags.add("AMR"); }
-  }
-  if (/(^|[^进攻型])中场/.test(s) && !/前腰/.test(s)) {
-    const hasL = /左/.test(s);
-    const hasR = /右/.test(s);
-    const hasC = /中/.test(s);
-    if (hasC || (!hasL && !hasR)) tags.add("MC");
-    if (hasL) tags.add("ML");
-    if (hasR) tags.add("MR");
-  }
-  if (/前锋|中锋|射手/.test(s)) tags.add("ST");
 
   // 英文代码兜底解析
   for (const code of ["DC", "CB", "DL", "LB", "DR", "RB", "WBL", "WBR", "DM", "CDM", "MC", "CM", "ML", "MR", "AMC", "CAM", "AML", "LW", "AMR", "RW", "ST", "CF"]) {
@@ -96,18 +112,76 @@ const ADJACENT_POSITIONS = {
   ST: ["AMC", "AMR", "AML"]
 };
 
-// 解析周薪数值（单位：欧元/周，用于缺乏直接 CA 时的队内层级参考）
-export function parseWageToNumber(wageStr) {
-  const s = String(wageStr || "").replace(/,/g, "");
-  const m = s.match(/([\d.]+)\s*(万|k|m|百万)?/i);
-  if (!m) return 0;
-  let num = Number.parseFloat(m[1]);
-  if (!Number.isFinite(num)) return 0;
+// 结构化解析薪资文本（Review #30）：区分小数逗号与千位逗号，识别周薪/月薪/年薪周期并折算为周薪
+export function parseWageDetails(wageStr) {
+  const raw = String(wageStr ?? "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+  if (!raw) return { parsed: false, amount: null, weeklyEquivalent: null, period: "unknown" };
+
+  // 识别薪资周期
+  let period = "unknown";
+  let periodDivisor = 1;
+  if (/\/周|每周|p\/w|per\s*week|pw\b/i.test(raw)) {
+    period = "weekly";
+    periodDivisor = 1;
+  } else if (/\/月|每月|p\/m|per\s*month|pm\b/i.test(raw)) {
+    period = "monthly";
+    periodDivisor = 4.3333;
+  } else if (/\/年|每年|p\/a|per\s*year|pa\b|yr\b/i.test(raw)) {
+    period = "yearly";
+    periodDivisor = 52;
+  }
+
+  const m = raw.match(/(\d[\d.,]*)\s*(万|k|m|百万)?/i);
+  if (!m) return { parsed: false, amount: null, weeklyEquivalent: null, period };
+
+  let numStr = m[1];
   const unit = (m[2] || "").toLowerCase();
-  if (unit === "万") num *= 10_000;
-  else if (unit === "k") num *= 1_000;
-  else if (unit === "m" || unit === "百万") num *= 1_000_000;
-  return num;
+  // 处理欧洲小数逗号（如 "12,5k" 或 "1,5万"）与千位逗号（如 "12,500"）
+  if (numStr.includes(",") && !numStr.includes(".")) {
+    const parts = numStr.split(",");
+    if (parts.length === 2 && parts[1].length !== 3) {
+      numStr = `${parts[0]}.${parts[1]}`;
+    } else {
+      numStr = numStr.replace(/,/g, "");
+    }
+  } else {
+    numStr = numStr.replace(/,/g, "");
+  }
+
+  let amount = Number.parseFloat(numStr);
+  if (!Number.isFinite(amount)) return { parsed: false, amount: null, weeklyEquivalent: null, period };
+  if (unit === "万") amount *= 10_000;
+  else if (unit === "k") amount *= 1_000;
+  else if (unit === "m" || unit === "百万") amount *= 1_000_000;
+
+  return {
+    parsed: true,
+    amount,
+    weeklyEquivalent: period === "unknown" ? null : amount / periodDivisor,
+    period
+  };
+}
+
+// 解析周薪数值（保持向后兼容，周薪/月薪/年薪自动折算；未知周期时返回解析金额，不可解析返回 0）
+export function parseWageToNumber(wageStr) {
+  const d = parseWageDetails(wageStr);
+  if (!d.parsed) return 0;
+  return d.weeklyEquivalent !== null ? d.weeklyEquivalent : d.amount;
+}
+
+// 从教练报告星级文本（如 "主力(14/20)" / "14-16/20" / "3.5星"）解析 0..20 能力分
+function parseCoachStarsScore(caStars) {
+  if (caStars === null || caStars === undefined) return null;
+  const s = String(caStars);
+  const ratio = s.match(/(\d+(?:\.\d+)?)(?:\s*-\s*(\d+(?:\.\d+)?))?\s*\/\s*20/);
+  if (ratio) {
+    const a = Number.parseFloat(ratio[1]);
+    const b = ratio[2] ? Number.parseFloat(ratio[2]) : a;
+    return (a + b) / 2;
+  }
+  const star = s.match(/(\d+(?:\.\d+)?)\s*星/);
+  if (star) return Number.parseFloat(star[1]) * 4;
+  return null;
 }
 
 function parsePercent(v, fallback = 85) {
@@ -117,7 +191,44 @@ function parsePercent(v, fallback = 85) {
 }
 
 /**
- * 计算单名球员踢目标槽位的确定性得分
+ * 评估单名球员的可用性三态（Review #28）：eligible / unavailable / unknown
+ */
+export function evaluatePlayerEligibility(player, { excludeSet = new Set(), minCondition = 72, strictMinCondition = false } = {}) {
+  if (excludeSet.has(player.index)) {
+    return { state: "unavailable", reason: "手动轮休排除" };
+  }
+  if (player.loanClub) {
+    return { state: "unavailable", reason: `外租在外（${player.loanClub}）` };
+  }
+  if (player.injured === true) {
+    return { state: "unavailable", reason: "伤病缺阵" };
+  }
+  if (player.suspended === true) {
+    return { state: "unavailable", reason: "停赛缺阵" };
+  }
+  if (player.eligibleForNextMatch === false) {
+    return { state: "unavailable", reason: "不具备本场比赛参赛资格" };
+  }
+  const statusText = String(player.status || player.availability || "");
+  if (/伤|停赛|不可用|未注册|无资格|外租|脑震荡|injur|suspend|ineligible|unregistered|concussion|unavailable/i.test(statusText)) {
+    return { state: "unavailable", reason: `状态不可用（${statusText}）` };
+  }
+  if (strictMinCondition) {
+    const cond = parsePercent(player.condition, null);
+    if (cond !== null && cond < minCondition) {
+      return { state: "unavailable", reason: `严格轮休排除（体能 ${cond}% < ${minCondition}%）` };
+    }
+  }
+  const hasExplicitFlags =
+    player.injured === false ||
+    player.suspended === false ||
+    player.eligibleForNextMatch === true ||
+    /可用|正常|健康|available|fit|eligible/i.test(statusText);
+  return { state: hasExplicitFlags ? "eligible" : "unknown", reason: hasExplicitFlags ? null : "快照未提供完整伤停/注册资格标志" };
+}
+
+/**
+ * 计算单名球员踢目标槽位的确定性得分（含能力来源标记）
  */
 export function scorePlayerForSlot(player, slot, { minCondition = 72, preferYouth = false, maxWageInSquad = 1 } = {}) {
   const tags = parsePositionTags(player.position);
@@ -128,19 +239,11 @@ export function scorePlayerForSlot(player, slot, { minCondition = 72, preferYout
   if (isPlayerGk !== isSlotGk) return -10_000;
 
   let posScore = 0;
-  let fitLabel = "客串";
   if (tags.has(slot)) {
     posScore = 50;
-    fitLabel = "天然位置";
   } else {
     const adj = ADJACENT_POSITIONS[slot] || [];
-    if (adj.some(a => tags.has(a))) {
-      posScore = 30;
-      fitLabel = "相近兼职";
-    } else {
-      posScore = 5;
-      fitLabel = "跨线客串";
-    }
+    posScore = adj.some(a => tags.has(a)) ? 30 : 5;
   }
 
   const cond = parsePercent(player.condition, 90);
@@ -151,12 +254,15 @@ export function scorePlayerForSlot(player, slot, { minCondition = 72, preferYout
   let fitnessScore = (cond / 100) * 24 + (sharp / 100) * 8;
   if (cond < minCondition) fitnessScore -= (minCondition - cond) * 1.5;
 
-  // 综合战力权重：优先使用显式 rating / ability；缺失时用队内薪资对数归一化做平滑参考
+  // 综合战力权重：显式 ability > avgRating > 教练星级(caStars) > 薪资对数代理（Review #29）
   let qualityScore = 0;
+  const coachScore = parseCoachStarsScore(player.caStars);
   if (Number.isFinite(Number(player.ability))) {
     qualityScore = Math.min(25, Number(player.ability) / 8);
   } else if (Number.isFinite(Number(player.avgRating)) && Number(player.avgRating) > 0) {
     qualityScore = Math.max(0, (Number(player.avgRating) - 6.0) * 12);
+  } else if (coachScore !== null) {
+    qualityScore = Math.min(24, (coachScore / 20) * 24);
   } else {
     const w = parseWageToNumber(player.wage);
     qualityScore = maxWageInSquad > 0 ? (Math.log10(w + 100) / Math.log10(maxWageInSquad + 100)) * 18 : 8;
@@ -170,6 +276,14 @@ export function scorePlayerForSlot(player, slot, { minCondition = 72, preferYout
   return Number((posScore + fitnessScore + qualityScore + youthBonus).toFixed(2));
 }
 
+function detectQualitySource(player) {
+  if (Number.isFinite(Number(player.ability))) return "ability";
+  if (Number.isFinite(Number(player.avgRating)) && Number(player.avgRating) > 0) return "avgRating";
+  if (parseCoachStarsScore(player.caStars) !== null) return "coachStars";
+  if (parseWageToNumber(player.wage) > 0) return "wageProxy";
+  return "fallbackDefault";
+}
+
 /**
  * 精确匈牙利算法（Kuhn-Munkres）：求解 m 个槽位与 n 名球员的最大权匹配（m <= n）
  */
@@ -179,7 +293,6 @@ export function hungarianMaxWeight(scoreMatrix) {
   const n = scoreMatrix[0].length;
   if (n < m) throw new Error(`可用球员数(${n})不足以填满 ${m} 个首发槽位。`);
 
-  // 将最大化问题转化为最小化非负代价矩阵
   let maxVal = -Infinity;
   for (let i = 0; i < m; i++) {
     for (let j = 0; j < n; j++) {
@@ -190,7 +303,6 @@ export function hungarianMaxWeight(scoreMatrix) {
     Array.from({ length: n }, (_, j) => maxVal - scoreMatrix[i][j])
   );
 
-  // 1-indexed 标准 O(m^2 * n) 匈牙利实现
   const u = new Float64Array(m + 1);
   const v = new Float64Array(n + 1);
   const p = new Int32Array(n + 1);
@@ -245,30 +357,74 @@ export function hungarianMaxWeight(scoreMatrix) {
 }
 
 /**
- * 确定性最优首发 11 人与 7 人替补席求解器
+ * 确定性最优首发 11 人与可配置替补席求解器（Review #28/#29）
  */
-export function solveBestXi(players, { formation = "4-2-3-1", slots = null, minCondition = 72, preferYouth = false, excludeIndices = [] } = {}) {
+export function solveBestXi(
+  players,
+  {
+    formation = "4-2-3-1",
+    slots = null,
+    minCondition = 72,
+    strictMinCondition = false,
+    preferYouth = false,
+    excludeIndices = [],
+    benchSize = 7,
+    oopFormationName = null
+  } = {}
+) {
   const excludeSet = new Set(excludeIndices);
+  const safeBenchSize = Math.max(0, Math.min(15, Number.isInteger(benchSize) ? benchSize : 7));
+  if (!Array.isArray(slots) && formation && !FORMATION_TEMPLATES[formation]) {
+    return {
+      ok: false,
+      infeasible: true,
+      unrecognizedFormation: formation,
+      supportedTemplates: Object.keys(FORMATION_TEMPLATES),
+      error: `未识别的阵型模板 "${formation}"（不再静默回退为 4-2-3-1），请传入受支持的 formation 或自定义 11 槽位 slots 数组。`
+    };
+  }
   const targetSlots = Array.isArray(slots) && slots.length === 11
     ? slots.map(s => String(s).toUpperCase())
-    : (FORMATION_TEMPLATES[formation] || FORMATION_TEMPLATES["4-2-3-1"]);
+    : FORMATION_TEMPLATES[formation || "4-2-3-1"];
 
   const unavailable = [];
   const available = [];
+  let explicitEligibleCount = 0;
+  let unknownEligibilityCount = 0;
 
   for (const p of players || []) {
-    const injuredOrBanned = Boolean(p.injured || p.suspended) || /伤|停赛|不可用|injur|suspend/i.test(String(p.status || p.availability || ""));
-    if (excludeSet.has(p.index) || injuredOrBanned) {
-      unavailable.push({ index: p.index, name: p.name, reason: excludeSet.has(p.index) ? "手动轮休排除" : "伤停/不可用" });
+    const elig = evaluatePlayerEligibility(p, { excludeSet, minCondition, strictMinCondition });
+    if (elig.state === "unavailable") {
+      unavailable.push({ index: p.index, name: p.name, eligibilityState: "unavailable", reason: elig.reason });
     } else {
-      available.push(p);
+      if (elig.state === "eligible") explicitEligibleCount++;
+      else unknownEligibilityCount++;
+      available.push({ ...p, _eligibilityState: elig.state });
     }
   }
 
-  if (available.length < targetSlots.length) {
+  // 硬可行性检查：门将槽位与外场槽位分别检查，杜绝“无健康门将却把外场球员硬塞进门将位”（Review #28）
+  const neededGk = targetSlots.filter(s => s === "GK").length;
+  const neededOutfield = targetSlots.length - neededGk;
+  const availGks = available.filter(p => parsePositionTags(p.position).has("GK"));
+  const availOutfield = available.filter(p => !parsePositionTags(p.position).has("GK"));
+
+  const missingPositions = [];
+  if (availGks.length < neededGk) missingPositions.push(`GK(需要${neededGk}, 可用${availGks.length})`);
+  if (availOutfield.length < neededOutfield) missingPositions.push(`外场球员(需要${neededOutfield}, 可用${availOutfield.length})`);
+
+  if (missingPositions.length > 0 || available.length < targetSlots.length) {
     return {
       ok: false,
-      error: `可用健康球员仅 ${available.length} 人，不足以排出 ${targetSlots.length} 人首发。`,
+      infeasible: true,
+      missingPositions,
+      availabilitySummary: {
+        totalConsidered: (players || []).length,
+        eligibleCount: explicitEligibleCount,
+        unknownEligibilityCount,
+        unavailableCount: unavailable.length
+      },
+      error: `当前可用阵容无法满足合法首发要求，位置缺口：${missingPositions.join("；") || `总可用人数 ${available.length} < ${targetSlots.length}`}。`,
       unavailable
     };
   }
@@ -280,12 +436,17 @@ export function solveBestXi(players, { formation = "4-2-3-1", slots = null, minC
 
   const assignment = hungarianMaxWeight(matrix);
   const pickedSet = new Set();
+  const qualitySources = new Set();
+  const lowConfidenceNotes = [];
+
   const startingXI = targetSlots.map((slot, slotIdx) => {
     const pIdx = assignment[slotIdx];
     const p = available[pIdx];
     pickedSet.add(p.index);
     const tags = parsePositionTags(p.position);
     const fit = tags.has(slot) ? "天然位置" : (ADJACENT_POSITIONS[slot] || []).some(a => tags.has(a)) ? "相近兼职" : "客串";
+    const qSrc = detectQualitySource(p);
+    qualitySources.add(qSrc);
     return {
       slotIndex: slotIdx,
       slot,
@@ -294,40 +455,56 @@ export function solveBestXi(players, { formation = "4-2-3-1", slots = null, minC
       age: Number.parseInt(p.age, 10) || null,
       naturalPosition: p.position,
       condition: p.condition ?? null,
+      eligibilityState: p._eligibilityState,
+      qualitySource: qSrc,
       fit,
       score: matrix[slotIdx][pIdx]
     };
   });
 
-  // 替补席 7 人：优先保 1 名替补门将 + 按综合分挑选后/中/前均衡外场替补
+  if (qualitySources.has("wageProxy") || qualitySources.has("fallbackDefault")) {
+    lowConfidenceNotes.push("部分球员缺少直接能力/评分/教练星级，战力权重使用了薪资代理或默认值。");
+  }
+  if (unknownEligibilityCount > 0) {
+    lowConfidenceNotes.push(`共有 ${unknownEligibilityCount} 名候选球员未读到完整伤停/注册资格标志（标为 unknown），落地前请核对比赛报名规则。`);
+  }
+  if (!oopFormationName) {
+    lowConfidenceNotes.push("本次排阵仅基于持球阵型槽位求解，未单独对无球阵型（OOP）做二次双阶段优化。");
+  }
+
+  // 替补席（按 benchSize 配置）：优先保 1 名替补门将 + 按综合分挑选均衡外场替补
   const remaining = available.filter(p => !pickedSet.has(p.index));
-  const subGk = remaining
-    .filter(p => parsePositionTags(p.position).has("GK"))
-    .sort((a, b) => scorePlayerForSlot(b, "GK", { minCondition, preferYouth, maxWageInSquad }) - scorePlayerForSlot(a, "GK", { minCondition, preferYouth, maxWageInSquad }))[0];
+  const subGk = safeBenchSize > 0
+    ? remaining
+        .filter(p => parsePositionTags(p.position).has("GK"))
+        .sort((a, b) => scorePlayerForSlot(b, "GK", { minCondition, preferYouth, maxWageInSquad }) - scorePlayerForSlot(a, "GK", { minCondition, preferYouth, maxWageInSquad }))[0]
+    : null;
 
   const bench = [];
-  if (subGk) {
-    bench.push({ squadIndex: subGk.index, name: subGk.name, position: subGk.position, condition: subGk.condition ?? null, role: "替补门将" });
+  if (subGk && bench.length < safeBenchSize) {
+    bench.push({ squadIndex: subGk.index, name: subGk.name, position: subGk.position, condition: subGk.condition ?? null, eligibilityState: subGk._eligibilityState, role: "替补门将" });
   }
   const outfieldRem = remaining
     .filter(p => !subGk || p.index !== subGk.index)
     .filter(p => !parsePositionTags(p.position).has("GK"))
     .map(p => {
       const cond = parsePercent(p.condition, 85);
+      const cs = parseCoachStarsScore(p.caStars);
       const w = parseWageToNumber(p.wage);
-      const q = maxWageInSquad > 0 ? (Math.log10(w + 100) / Math.log10(maxWageInSquad + 100)) * 20 : 10;
+      const q = cs !== null ? cs : (maxWageInSquad > 0 ? (Math.log10(w + 100) / Math.log10(maxWageInSquad + 100)) * 20 : 10);
       const yBonus = preferYouth && (Number.parseInt(p.age, 10) || 25) <= 21 ? 10 : 0;
       return { p, rankScore: cond * 0.3 + q + yBonus };
     })
     .sort((a, b) => b.rankScore - a.rankScore);
 
   for (const item of outfieldRem) {
-    if (bench.length >= 7) break;
+    if (bench.length >= safeBenchSize) break;
     bench.push({
       squadIndex: item.p.index,
       name: item.p.name,
       position: item.p.position,
       condition: item.p.condition ?? null,
+      eligibilityState: item.p._eligibilityState,
       role: "轮换替补"
     });
   }
@@ -340,38 +517,106 @@ export function solveBestXi(players, { formation = "4-2-3-1", slots = null, minC
     readOnly: true,
     algorithm: "hungarian_max_weight_bipartite",
     formation: Array.isArray(slots) ? "custom" : formation,
+    oopFormationName: oopFormationName || null,
+    benchSizeRequested: safeBenchSize,
+    qualitySourcesUsed: [...qualitySources],
+    lowConfidenceNotes,
+    availabilitySummary: {
+      totalConsidered: (players || []).length,
+      eligibleCount: explicitEligibleCount,
+      unknownEligibilityCount,
+      unavailableCount: unavailable.length
+    },
     totalScore,
     outOfPositionWarnings: outOfPosition,
     startingXI,
     bench,
     unavailableCount: unavailable.length,
-    unavailable: unavailable.slice(0, 10)
+    unavailable: unavailable.slice(0, 15)
   };
 }
 
-export function createBestXiTools(call) {
-  const snapshot = createSquadSnapshotTools(call);
+export function createBestXiTools(call, sharedSnapshotTools = null) {
+  const snapshot = sharedSnapshotTools || createSquadSnapshotTools(call);
   const client = createLiveClient(call);
 
-  async function optimizeBestXi({ formation, slots, minCondition = 72, preferYouth = false, excludeIndices = [] } = {}) {
+  async function optimizeBestXi({
+    formation,
+    slots,
+    minCondition = 72,
+    strictMinCondition = false,
+    preferYouth = false,
+    excludeIndices = [],
+    benchSize
+  } = {}) {
     let resolvedFormation = formation;
+    let detectedFormationName = null;
+    let oopFormationName = null;
+    let detectedBenchSize = benchSize;
+
     if (!resolvedFormation && !slots) {
-      // 尝试自动读取当前球队持球阵型名匹配模板
       try {
-        const currentName = await client.scope(async scope => {
+        const tacticInfo = await client.scope(async scope => {
           const { tactic } = await scope.tactic();
-          const f = await scope.subscribeOptional(tactic.handle, "FormationName", {}, 600);
-          return clean(scalar(f.read?.value) || "");
+          const [fIp, fOop, subsSub] = await Promise.all([
+            scope.subscribeOptional(tactic.handle, "FormationName", { InPossession: true }, 600),
+            scope.subscribeOptional(tactic.handle, "FormationName", { InPossession: false }, 600),
+            scope.subscribeOptional(tactic.handle, "NumberOfSubstitutes", {}, 500)
+          ]);
+          return {
+            ipName: clean(scalar(fIp.read?.value) || ""),
+            oopName: clean(scalar(fOop.read?.value) || "") || null,
+            subsCount: Number.parseInt(scalar(subsSub.read?.value), 10)
+          };
         });
-        const matchedKey = Object.keys(FORMATION_TEMPLATES).find(k => currentName.includes(k));
-        resolvedFormation = matchedKey || "4-2-3-1";
+        detectedFormationName = tacticInfo.ipName || null;
+        oopFormationName = tacticInfo.oopName || null;
+        if (detectedBenchSize === undefined && Number.isInteger(tacticInfo.subsCount) && tacticInfo.subsCount >= 0 && tacticInfo.subsCount <= 15) {
+          detectedBenchSize = tacticInfo.subsCount;
+        }
+        if (detectedFormationName) {
+          const matchedKey = Object.keys(FORMATION_TEMPLATES).find(k => detectedFormationName.includes(k));
+          if (!matchedKey) {
+            return {
+              ok: false,
+              unrecognizedFormation: detectedFormationName,
+              oopFormationName,
+              supportedTemplates: Object.keys(FORMATION_TEMPLATES),
+              error: `当前球队阵型 "${detectedFormationName}" 未命中标准模板（可能是非对称或定制阵型），已拒绝静默套用 4-2-3-1；请显式传入 11 槽位 slots 数组或指定 formation 模板。`
+            };
+          }
+          resolvedFormation = matchedKey;
+        }
       } catch {
-        resolvedFormation = "4-2-3-1";
+        // 无法读取战术通道时在结果中明确标注
       }
     }
-    const sq = await snapshot.getSquadSnapshot({});
+
+    // 使用全量分页快照，确保 >30 人阵容的末页门将/轮换球员全部纳入求解（Review #27/#52）
+    const sq = await snapshot.getFullSquadSnapshot({ includeContractAndStars: true, includeAvailability: true, useCache: true });
     const players = sq?.players || [];
-    return solveBestXi(players, { formation: resolvedFormation || "4-2-3-1", slots, minCondition, preferYouth, excludeIndices });
+    const solved = solveBestXi(players, {
+      formation: resolvedFormation || "4-2-3-1",
+      slots,
+      minCondition,
+      strictMinCondition,
+      preferYouth,
+      excludeIndices,
+      benchSize: detectedBenchSize ?? 7,
+      oopFormationName
+    });
+    return {
+      ...solved,
+      snapshotCoverage: {
+        totalInSquad: sq.total,
+        evaluatedCount: players.length,
+        partial: Boolean(sq.partial),
+        degraded: Boolean(sq.degraded),
+        reusedSnapshotCache: Boolean(sq.fromCache),
+        gameDate: sq.gameDate || null
+      },
+      ...(detectedFormationName ? { detectedFormationName } : {})
+    };
   }
 
   return { optimizeBestXi };

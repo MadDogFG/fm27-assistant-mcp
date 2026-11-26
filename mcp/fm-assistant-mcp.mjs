@@ -23,6 +23,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOG_FILE = process.env.FM_ASSISTANT_LOG_FILE || path.resolve(__dirname, "..", "logs", "mcp.log");
 const MAX_LOG_BYTES = 2 * 1024 * 1024;
 
+function redactSecrets(text) {
+  return String(text ?? "")
+    .replace(/(Bearer\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]")
+    .replace(/("(?:token|authorization|secret|password|expectedChoiceToken|expectedConfirmationToken)"\s*:\s*")[^"]*(")/gi, "$1[REDACTED]$2");
+}
+
 function writeMcpLog(level, message) {
   try {
     const dir = path.dirname(LOG_FILE);
@@ -31,7 +37,7 @@ function writeMcpLog(level, message) {
       try { fs.renameSync(LOG_FILE, LOG_FILE + ".old"); } catch {}
     }
     const ts = new Date().toISOString();
-    fs.appendFileSync(LOG_FILE, `[${ts}] [${level}] ${message}\n`, "utf8");
+    fs.appendFileSync(LOG_FILE, `[${ts}] [${level}] ${redactSecrets(message)}\n`, "utf8");
   } catch {
     // 日志写入失败绝不影响主流程
   }
@@ -93,7 +99,7 @@ async function call(endpoint, { method = "GET", body = null, timeout = 8000 } = 
     if (error?.name === "AbortError") throw new Error(`FM 助教接口超时（${endpoint}）`);
     if (String(error?.cause?.code) === "ECONNREFUSED" || /fetch failed/.test(String(error?.message))) {
       throw new Error(
-        "连不上 FM 助教插件（127.0.0.1:27190）。请确认：1) FM27 正在运行；2) 插件已安装到 BepInEx\\plugins\\FMAssistant 并加载；3) 游戏已重启过一次。"
+        `连不上 FM 助教插件（${BASE}）。请确认：1) FM27 正在运行；2) 插件已安装到 BepInEx\\plugins\\FMAssistant 并加载；3) 若自定义了 FM_ASSISTANT_URL，请核对地址与端口是否正确。`
       );
     }
     throw error;
@@ -497,8 +503,34 @@ async function callToolImpl(name, args, meta) {
       return call(`/api/v1/internal/event?${query}`, { method: "POST", body: JSON.stringify(args.payload ?? null) });
     }
 
-    case "plugin_health":
-      return call("/health");
+    case "plugin_health": {
+      const health = await call("/health");
+      // Review #49: 区分服务在线、鉴权成功、存档已加载、经理状态四层信息（仅发零订阅元数据探针，不打开通道）
+      const statusSummary = {
+        serviceOnline: Boolean(health?.ok !== false),
+        authRequired: Boolean(health?.authRequired),
+        authStatus: "unknown",
+        saveLoaded: null,
+        employmentNote: "失业/待业经理仍可使用 search_players、list_shortlists、get_shortlist_players 与工作中心求职工具。"
+      };
+      try {
+        const probe = await call("/api/v1/live/properties?source=human&filter=Team", { timeout: 2000 });
+        if (probe && Array.isArray(probe.properties)) {
+          statusSummary.authStatus = "authorized";
+          statusSummary.saveLoaded = true;
+        }
+      } catch (probeErr) {
+        const msg = String(probeErr?.message || probeErr);
+        if (probeErr?.code === "no_active_save" || /Expected one active human reference;\s*found 0|当前没有活动存档|No active save/i.test(msg)) {
+          statusSummary.authStatus = "authorized";
+          statusSummary.saveLoaded = false;
+        } else if (/401|Unauthorized|鉴权|token/i.test(msg)) {
+          statusSummary.authStatus = "unauthorized";
+          statusSummary.saveLoaded = null;
+        }
+      }
+      return { ...(health && typeof health === "object" ? health : { raw: health }), targetUrl: BASE, diagnostics: statusSummary };
+    }
     case "log": {
       const params = new URLSearchParams();
       if (args.limit) params.set("limit", String(args.limit));
@@ -759,6 +791,22 @@ async function handleMessage(message) {
           code: "no_active_save",
           error: "当前没有活动存档，请在游戏内载入存档后再调用。",
           hint: error?.hint || "请先在 Football Manager 27 游戏内载入经理存档并进入主界面，再重试本次操作。"
+        };
+        reply(id, { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], isError: true });
+      } else if (error?.timeoutReceipt) {
+        // Review #51: HTTP 504 超时回执必须结构化透传 operationId 与未知状态，便于另一个 Agent 只读恢复而不盲目重发写入
+        const tr = error.timeoutReceipt;
+        const payload = {
+          ok: false,
+          code: "execution_timeout_receipt",
+          status: tr.status || "execution_result_unknown",
+          operationId: tr.operationId || targetParams?.operationId || null,
+          retrySafe: tr.retrySafe === true,
+          timeoutReceipt: tr,
+          error: errMsg,
+          hint: tr.retrySafe === true
+            ? "请求在执行前取消，可先重读当前游戏状态再决定是否重试。"
+            : "命令结果未知（HTTP 504），请保留 operationId 调用 operation_status 或对应只读状态工具核验，严禁自动重发写操作。"
         };
         reply(id, { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], isError: true });
       } else if (error?.hint) {

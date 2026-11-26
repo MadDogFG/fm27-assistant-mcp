@@ -7,8 +7,13 @@ export function createShortlistManagementTools(call) {
   const client = createLiveClient(call);
 
   async function readShortlists(scope) {
-    const team = await scope.subscribe("human", "Team");
-    const ctx = { human: { source: "human" }, team: { source: team.handle }, IsPlayerRecruitment: true };
+    // Review #49: 失业/待业经理同样可查看短名单，Team 上下文改为可选订阅避免误报无法读取
+    const team = await scope.subscribeOptional("human", "Team");
+    const ctx = {
+      human: { source: "human" },
+      ...(team.handle ? { team: { source: team.handle } } : {}),
+      IsPlayerRecruitment: true
+    };
     const sl = await scope.subscribe("human", "HumanShortlists", ctx);
     const items = (sl.read?.value?.items || []).map((item, pos) => {
       const f = item.fields || {};
@@ -45,9 +50,13 @@ export function createShortlistManagementTools(call) {
     return `${listVal?.count ?? items.length}|${items.map(it => it?.identity || "").join(",")}`;
   }
 
-  // 读取当前 HumanPersonSearch(Type=0) 的列表快照签名（仅用于切换前记录基线）
+  // 读取当前 HumanPersonSearch(Type=0) 的列表快照签名（仅用于切换前记录基线；失业经理无 teamHandle 时同样兼容）
   async function captureCurrentShortlistSignature(scope, teamHandle) {
-    const ctx0 = { human: { source: "human" }, Human: { source: "human" }, team: { source: teamHandle }, Team: { source: teamHandle }, Type: 0, type: 0 };
+    const ctx0 = {
+      human: { source: "human" }, Human: { source: "human" },
+      ...(teamHandle ? { team: { source: teamHandle }, Team: { source: teamHandle } } : {}),
+      Type: 0, type: 0
+    };
     const ps0 = await scope.subscribeOptional("human", "HumanPersonSearch", ctx0, 1200);
     if (!ps0.handle) return null;
     const pl = await scope.subscribeOptional(ps0.handle, "PersonList", ctx0, 1000);
@@ -66,7 +75,11 @@ export function createShortlistManagementTools(call) {
     includeAttributes = true,
     limit = 20
   } = {}) {
-    const ctx0 = { human: { source: "human" }, Human: { source: "human" }, team: { source: teamHandle }, Team: { source: teamHandle }, Type: 0, type: 0 };
+    const ctx0 = {
+      human: { source: "human" }, Human: { source: "human" },
+      ...(teamHandle ? { team: { source: teamHandle }, Team: { source: teamHandle } } : {}),
+      Type: 0, type: 0
+    };
     const ps0 = await scope.subscribeOptional("human", "HumanPersonSearch", ctx0, 1500);
     if (!ps0.handle) throw new Error("候选名单搜索通道（HumanPersonSearch Type=0）暂未就绪。");
     const pl = await scope.subscribeOptional(ps0.handle, "PersonList", ctx0, 1200);

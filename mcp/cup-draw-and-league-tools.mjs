@@ -1,20 +1,10 @@
 import { createLiveClient, clean } from "./live-client.mjs";
+import { createPropertyRegistryCache } from "./core/property-registry.mjs";
 
 // 杯赛抽签（MGR-R10 / MGR-O13）与增加/移除联赛（MGR-O24a/b）管理工具组
 export function createCupDrawAndLeagueTools(call) {
   const client = createLiveClient(call);
-  let cachedIdMap = null;
-
-  async function getPropertyMap() {
-    if (cachedIdMap) return cachedIdMap;
-    try {
-      const reg = await call("/api/v1/internal/registry?kind=properties");
-      cachedIdMap = new Map((reg?.items || []).map(x => [x.id, x.name]));
-    } catch {
-      cachedIdMap = new Map();
-    }
-    return cachedIdMap;
-  }
+  const { getPropertyMap } = createPropertyRegistryCache(call);
 
   const stripTags = text => clean(text).replace(/\u0001[^\u0002]*\u0002/g, "").replace(/\u0001/g, "").trim();
 
@@ -50,8 +40,8 @@ export function createCupDrawAndLeagueTools(call) {
     });
   }
 
-  // MGR-O13: 驱动杯赛抽签流程（open/start/next_team/next_pot/draw_all/pause）
-  async function controlCupDraw({ action = "draw_all", operationId } = {}) {
+  // MGR-O13: 驱动杯赛抽签流程（必须显式指定 action，禁止空参默认 draw_all）
+  async function controlCupDraw({ action, operationId } = {}) {
     const eventMap = {
       open: "EventFmxDrawScreenOpened",
       start: "EventFmxStartDraw",
@@ -61,7 +51,7 @@ export function createCupDrawAndLeagueTools(call) {
       pause: "EventFmxPauseDraw",
     };
     const eventName = eventMap[action];
-    if (!eventName) throw new Error(`未知杯赛抽签动作: ${action}（支持 open/start/next_team/next_pot/draw_all/pause）`);
+    if (!eventName) throw new Error(`必须明确指定杯赛抽签动作 action（支持 open/start/next_team/next_pot/draw_all/pause）。当前: ${action}`);
     const id = operationId || `cup_draw_${action}_${Date.now()}`;
     const send = await call(
       `/api/v1/internal/event?id=${encodeURIComponent(id)}&event=${encodeURIComponent(eventName)}&source=human&apply=true`,
@@ -70,15 +60,15 @@ export function createCupDrawAndLeagueTools(call) {
     return { ok: true, operationId: id, action, eventName, dispatch: send };
   }
 
-  // MGR-O24a/b: 增加/确认/撤销联赛变更
-  async function managePlayableLeagues({ action = "confirm", leagueId = null, optionPath = null, operationId } = {}) {
+  // MGR-O24a/b: 增加/确认/撤销联赛变更（必须显式指定 action，禁止空参默认 confirm）
+  async function managePlayableLeagues({ action, leagueId = null, optionPath = null, operationId } = {}) {
     const eventMap = {
       add: "EventFmxAddLeague",
       confirm: "EventFmxConfirmAddRemoveLeagues",
       undo: "EventFmxUndoAddRemoveLeagues",
     };
     const eventName = eventMap[action];
-    if (!eventName) throw new Error(`未知联赛管理动作: ${action}（支持 add/confirm/undo）`);
+    if (!eventName) throw new Error(`必须明确指定联赛管理动作 action（支持 add/confirm/undo）。当前: ${action}`);
     if (action === "add" && (leagueId === null || leagueId === undefined) && !optionPath) {
       throw new Error("add 动作必须提供 leagueId 或 optionPath。");
     }

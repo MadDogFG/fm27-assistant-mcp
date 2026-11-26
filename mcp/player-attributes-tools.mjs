@@ -268,40 +268,90 @@ export function createPlayerAttributesTools(call) {
         await scope.release(nfSub.handle);
       }
 
-      // 扫描本队体能偏低(<80)、锐度偏低(<50)或士气偏低(<=11)的预警球员（不吐全量20人以极省 Token）
+      // Review #48: 全量扫描整支一线队（不截断前 25 人），同步检查体能(<80)、锐度(<50)与士气(<=11)；
+      // 严禁将缺失的体能/士气/锐度/未读数静默默认成 100 / 15 / "0"
       const alerts = [];
       const playersSub = await scope.subscribeOptional(team.handle, "Players", ctx, 1500);
-      if (playersSub.handle && playersSub.read?.value?.kind === "list") {
-        const items = playersSub.read.value.items || [];
-        for (let i = 0; i < Math.min(items.length, 25); i++) {
+      const squadChannelAvailable = Boolean(playersSub.handle && playersSub.read?.value?.kind === "list");
+      const squadTotalCount = squadChannelAvailable
+        ? (playersSub.read.value.count ?? (playersSub.read.value.items?.length || 0))
+        : null;
+      let checkedCount = 0;
+      let unknownConditionCount = 0;
+      let unknownSharpnessCount = 0;
+      let unknownMoraleCount = 0;
+
+      if (squadChannelAvailable) {
+        const parseFiniteNum = raw => {
+          if (raw === null || raw === undefined || String(raw).trim() === "") return null;
+          const m = String(raw).match(/-?\d+(?:\.\d+)?/);
+          if (!m) return null;
+          const n = Number(m[0]);
+          return Number.isFinite(n) ? n : null;
+        };
+        for (let i = 0; i < squadTotalCount; i++) {
+          checkedCount++;
           const pRef = { source: playersSub.handle, path: String(i) };
           const pCtx = { ...ctx, Person: pRef };
-          const cond = Number((await scope.readAndRelease(pRef, "Condition", pCtx, 400)).scalar ?? 100);
-          const morale = Number((await scope.readAndRelease(pRef, "Morale", pCtx, 400)).scalar ?? 15);
-          if (cond < 80 || morale <= 11) {
+          const [condR, sharpR, moraleR] = await Promise.all([
+            scope.readAndRelease(pRef, "Condition", pCtx, 400),
+            scope.readAndRelease(pRef, "Sharpness", pCtx, 400),
+            scope.readAndRelease(pRef, "Morale", pCtx, 400)
+          ]);
+          let sharpVal = sharpR.ok ? parseFiniteNum(sharpR.scalar) : null;
+          if (sharpVal === null) {
+            const altSharp = await scope.readAndRelease(pRef, "MatchSharpness", pCtx, 350);
+            if (altSharp.ok) sharpVal = parseFiniteNum(altSharp.scalar);
+          }
+          const condVal = condR.ok ? parseFiniteNum(condR.scalar) : null;
+          const moraleVal = moraleR.ok ? parseFiniteNum(moraleR.scalar) : null;
+
+          if (condVal === null) unknownConditionCount++;
+          if (sharpVal === null) unknownSharpnessCount++;
+          if (moraleVal === null) unknownMoraleCount++;
+
+          const reasons = [];
+          if (condVal !== null && condVal < 80) reasons.push(`体能偏低(${condVal})`);
+          if (sharpVal !== null && sharpVal < 50) reasons.push(`锐度偏低(${sharpVal})`);
+          if (moraleVal !== null && moraleVal <= 11) reasons.push(`士气偏低(${moraleVal})`);
+
+          if (reasons.length > 0) {
             const name = (await scope.readAndRelease(pRef, "Name", pCtx, 400)).scalar || `#${i}`;
             const pos = (await scope.readAndRelease(pRef, "BestPositionShortString", pCtx, 400)).scalar || null;
-            alerts.push({ squadIndex: i, name, position: pos, condition: cond, morale });
+            alerts.push({ squadIndex: i, name, position: pos, condition: condVal, sharpness: sharpVal, morale: moraleVal, reasons });
           }
         }
         await scope.release(playersSub.handle);
       }
 
       const unreadR = await scope.readAndRelease("human", "NumberUnreadMessages", ctx, 500);
+      const unreadMessages = unreadR.ok && unreadR.scalar !== null ? unreadR.scalar : null;
       const tacticSub = await scope.subscribeOptional(team.handle, "Tactic", { ...ctx, Boolean: true }, 1000);
       const mentalityR = tacticSub.handle ? await scope.readAndRelease(tacticSub.handle, "Mentality", ctx, 500) : null;
+      const degraded = !squadChannelAvailable || unreadMessages === null;
 
       return {
         ok: true,
         readOnly: true,
+        degraded,
         teamName,
         league: { name: leagueName, position: posR.scalar || null },
         nextMatch: { opponentName: nextOpponent, inDays },
         currentMentality: mentalityR?.scalar || null,
-        unreadMessages: unreadR.scalar || "0",
-        squadAlertsCount: alerts.length,
+        unreadMessages,
+        unreadMessagesStatus: unreadMessages === null ? "unavailable" : "ok",
+        squadScanSummary: {
+          available: squadChannelAvailable,
+          totalPlayers: squadTotalCount,
+          checkedPlayers: checkedCount,
+          unknownConditionCount,
+          unknownSharpnessCount,
+          unknownMoraleCount,
+          ...(squadChannelAvailable ? {} : { unavailable: playersSub.unavailable || "players_channel_unavailable" })
+        },
+        squadAlertsCount: squadChannelAvailable ? alerts.length : null,
         squadAlerts: alerts,
-        tip: "如需完整 20 人名单请调 get_squad_snapshot；需对手预计首发与针对性指令请调 get_opposition_instructions。"
+        tip: "如需完整全队名单请调 get_squad_snapshot；需对手预计首发与针对性指令请调 get_opposition_instructions。"
       };
     });
   }

@@ -25,8 +25,23 @@ export function createManagerTools(call) {
       const transfer = await scope.subscribe(club.handle, "TransferBudget");
       const wages = await scope.subscribe(club.handle, "WagesData");
       const wageBudget = await scope.subscribe(wages.handle, "CurrentWageBudgetValue");
-      return { ok: true, scope: "live_club_budget",
-        transferBudget: transfer.read.value, wageBudget: wageBudget.read.value };
+      const wageSpendSub = await scope.subscribeOptional(wages.handle, "CurrentWageSpendingValue", {}, 600);
+      const wageRemainingSub = await scope.subscribeOptional(wages.handle, "WageBudgetRemainingValue", {}, 600);
+      const currentWageSpend = wageSpendSub.handle ? wageSpendSub.read.value : null;
+      const remainingWageBudget = wageRemainingSub.handle ? wageRemainingSub.read.value : null;
+      return {
+        ok: true,
+        readOnly: true,
+        scope: "live_club_budget_balances",
+        transferBudget: transfer.read.value,
+        wageBudgetTotal: wageBudget.read.value,
+        wageBudget: wageBudget.read.value,
+        currentWageSpend: currentWageSpend ?? { unavailable: wageSpendSub.unavailable || "not_exposed" },
+        remainingWageRoom: remainingWageBudget ?? { unavailable: wageRemainingSub.unavailable || "not_exposed" },
+        note: remainingWageBudget
+          ? "已分列转会预算余额、总工资预算额度与剩余工资空间；预算调整滑杆草稿请另行调用 get_budget_allocation。"
+          : "wageBudgetTotal 为总工资预算额度而非剩余可用工资空间（当前支出/剩余字段未暴露），不可把总工资预算直接当成可签新援的剩余空间。"
+      };
     }),
     getBudgetAllocation: () => budget(async ({ scope, adjustment, current, limits, editable, transfer, other }) => {
       const canEdit = String(scalar(editable.read.value)).toLowerCase() === "true";
@@ -39,14 +54,15 @@ export function createManagerTools(call) {
       }
       return {
         ok: true,
-        scope: "budget_draft",
+        readOnly: true,
+        scope: "budget_adjustment_slider_draft",
         index: scalar(current.read.value),
         editable: scalar(editable.read.value),
         limits: limits.read.value,
         editedTransferDisplay: scalar(transfer.read.value),
         editedOtherDisplay: scalar(other.read.value),
         confirmationToken,
-        note: "预算金额是游戏的显示文本；提交确认时必须传回此处或 stage_budget_allocation 返回的 confirmationToken 与稳定 operationId。"
+        note: "此处为预算分配滑杆草稿显示文本（未提交生效，且不含实时工资已用空间）；查询当前生效余额请调 get_club_budget_balances，提交确认时必须传回 confirmationToken 与稳定 operationId。"
       };
     }),
     stageBudgetAllocation: args => budget(async ({ scope, adjustment, current, limits, editable, transfer, other }) => {
